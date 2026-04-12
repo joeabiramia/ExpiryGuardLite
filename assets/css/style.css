@@ -1,0 +1,30 @@
+body {
+    font-family: Arial, sans-serif;
+}
+.sidebar {
+    width: 240px;
+    min-height: 100vh;
+}
+.sidebar-link {
+    display: block;
+    color: #ddd;
+    text-decoration: none;
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin-bottom: 6px;
+}
+.sidebar-link:hover,
+.sidebar-link.active {
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+}
+.stat-card {
+    border: 0;
+    box-shadow: 0 .125rem .5rem rgba(0,0,0,.08);
+}
+.content {
+    flex: 1;
+}
+.card {
+    border-radius: 14px;
+}
