@@ -15,6 +15,15 @@ if ($barcode === '' || $product_name === '' || $expiry_date === '' || $entered_b
     jsonResponse(false, 'Barcode, product name, expiry date, and entered_by are required');
 }
 
+$check = $conn->prepare("SELECT id FROM products WHERE barcode = ? AND expiry_date = ? LIMIT 1");
+$check->bind_param("ss", $barcode, $expiry_date);
+$check->execute();
+$existing = $check->get_result()->fetch_assoc();
+
+if ($existing) {
+    jsonResponse(false, 'This product batch already exists');
+}
+
 $currentDate = date('Y-m-d');
 $daysLeft = (strtotime($expiry_date) - strtotime($currentDate)) / 86400;
 
@@ -25,7 +34,12 @@ if ($daysLeft < 0) {
     $status = 'near_expiry';
 }
 
-$stmt = $conn->prepare('INSERT INTO products (barcode, product_name, expiry_date, status, entered_by, entered_on) VALUES (?, ?, ?, ?, ?, NOW())');
+$stmt = $conn->prepare('
+    INSERT INTO products
+    (barcode, product_name, expiry_date, status, entered_by, entered_on)
+    VALUES (?, ?, ?, ?, ?, NOW())
+');
+
 $stmt->bind_param('ssssi', $barcode, $product_name, $expiry_date, $status, $entered_by);
 
 if ($stmt->execute()) {
@@ -36,4 +50,3 @@ if ($stmt->execute()) {
 }
 
 jsonResponse(false, 'Failed to save product');
-
