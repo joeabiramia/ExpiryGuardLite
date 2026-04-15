@@ -227,6 +227,23 @@ $cards = [
     </div>
 </div>
 
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+        <h5 class="mb-3">Natural language SQL query</h5>
+        <p class="text-muted small mb-3">Ask the system for inventory data in plain English. Only SELECT queries are allowed.</p>
+        <form id="nlpQueryForm" class="row g-3">
+            <div class="col-lg-10">
+                <input type="text" id="query" name="query" class="form-control" placeholder="e.g., What are the near expiry items in April in Jbeil branch?" required>
+            </div>
+            <div class="col-lg-2 d-grid">
+                <button type="submit" class="btn btn-primary">Run Query</button>
+            </div>
+        </form>
+        <div id="nlpStatus" class="mt-3 text-muted small"></div>
+        <div id="nlpResults" class="mt-3"></div>
+    </div>
+</div>
+
 <div class="row g-3">
     <div class="col-lg-6">
         <div class="card border-0 shadow-sm h-100">
@@ -409,6 +426,71 @@ new Chart(document.getElementById('trendChart'), {
         maintainAspectRatio: false
     }
 });
+
+const nlpForm = document.getElementById('nlpQueryForm');
+const nlpStatus = document.getElementById('nlpStatus');
+const nlpResults = document.getElementById('nlpResults');
+
+nlpForm.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const query = document.getElementById('query').value.trim();
+    if (!query) {
+        return;
+    }
+
+    nlpStatus.textContent = 'Running query...';
+    nlpResults.innerHTML = '';
+
+    try {
+        const response = await fetch('../api/nlp_query.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({ query })
+        });
+
+        const result = await response.json();
+
+        if (result.error) {
+            nlpStatus.textContent = result.error;
+            nlpResults.innerHTML = '';
+            return;
+        }
+
+        nlpStatus.textContent = `SQL generated: ${result.sql}`;
+
+        if (!Array.isArray(result.data) || result.data.length === 0) {
+            nlpResults.innerHTML = '<div class="text-muted">No rows returned.</div>';
+            return;
+        }
+
+        const columns = Object.keys(result.data[0]);
+        let html = '<div class="table-responsive"><table class="table table-sm table-striped">';
+        html += '<thead><tr>' + columns.map(column => `<th>${column}</th>`).join('') + '</tr></thead>';
+        html += '<tbody>';
+
+        result.data.forEach(row => {
+            html += '<tr>' + columns.map(column => `<td>${row[column] !== null ? htmlspecialchars(row[column]) : ''}</td>`).join('') + '</tr>';
+        });
+
+        html += '</tbody></table></div>';
+        nlpResults.innerHTML = html;
+    } catch (error) {
+        nlpStatus.textContent = 'An error occurred while running the query.';
+        nlpResults.innerHTML = '';
+        console.error(error);
+    }
+});
+
+function htmlspecialchars(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
 </script>
 
 <?php include 'layout_bottom.php'; ?>

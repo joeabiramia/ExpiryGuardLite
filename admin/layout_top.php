@@ -62,7 +62,7 @@ $navItems = [
     ['file' => 'removed.php', 'label' => 'Removed Products', 'icon' => 'bi-trash3'],
     ['file' => 'category_rules.php', 'label' => 'Category Rules', 'icon' => 'bi-tags'],
     ['file' => 'users.php', 'label' => 'Users', 'icon' => 'bi-people'],
-    ['file' => 'reports.php', 'label' => 'Reports', 'icon' => 'bi-file-earmark-text'],
+    // ['file' => 'reports.php', 'label' => 'Reports', 'icon' => 'bi-file-earmark-text'],
     ['file' => 'analytics.php', 'label' => 'Analytics', 'icon' => 'bi-bar-chart-line']
 ];
 ?>

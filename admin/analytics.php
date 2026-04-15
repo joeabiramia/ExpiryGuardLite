@@ -17,7 +17,14 @@ $kpiMap = [
 
 $kpis = [];
 foreach ($kpiMap as $key => $sql) {
-    $row = $conn->query($sql)->fetch_assoc();
+    if ($branchFilterValue !== null && strpos($sql, '?') !== false) {
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param('s', $branchFilterValue);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+    } else {
+        $row = $conn->query($sql)->fetch_assoc();
+    }
     $kpis[$key] = (int)$row['total'];
 }
 
