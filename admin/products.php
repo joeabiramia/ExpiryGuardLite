@@ -1,12 +1,22 @@
 <?php include 'layout_top.php'; ?>
 <?php require_once '../config/db.php'; ?>
+<?php require_once '../config/branch_filter.php'; ?>
 <?php
 $sql = "SELECT p.*, u.full_name AS entered_by_name, ru.full_name AS removed_by_name
         FROM products p
         LEFT JOIN users u ON p.entered_by = u.id
         LEFT JOIN users ru ON p.removed_by = ru.id
+        WHERE 1=1" . ($branchFilterValue !== null ? $branchFilterSqlAlias : '') . "
         ORDER BY p.id DESC";
-$products = $conn->query($sql);
+
+if ($branchFilterValue !== null) {
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param('s', $branchFilterValue);
+    $stmt->execute();
+    $products = $stmt->get_result();
+} else {
+    $products = $conn->query($sql);
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['remove_product'])) {
     $id = (int)$_POST['product_id'];
@@ -15,11 +25,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['remove_product'])) {
     $stmt = $conn->prepare('UPDATE products SET status=?, is_removed=1, removed_by=?, removed_on=NOW() WHERE id=?');
     $stmt->bind_param('sii', $status, $removed_by, $id);
     $stmt->execute();
-    header('Location: products.php'); exit();
+    $redirect = 'products.php' . ($selectedBranch !== 'all' ? '?branch=' . urlencode($selectedBranch) : '');
+    header('Location: ' . $redirect);
+    exit();
 }
 ?>
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h2>Products</h2>
+    <div>
+        <h2>Products</h2>
+        <?php if ($selectedBranch !== 'all'): ?>
+            <div class="text-muted small">Viewing: <?= htmlspecialchars($selectedBranch) ?></div>
+        <?php endif; ?>
+    </div>
 </div>
 <div class="card border-0 shadow-sm">
     <div class="card-body table-responsive">
@@ -43,6 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['remove_product'])) {
                         <?php if ((int)$product['is_removed'] === 0): ?>
                         <form method="POST" class="d-inline" onsubmit="return confirm('Mark this product as removed?');">
                             <input type="hidden" name="product_id" value="<?= $product['id'] ?>">
+                            <input type="hidden" name="branch" value="<?= htmlspecialchars($selectedBranch) ?>">
                             <button name="remove_product" class="btn btn-sm btn-outline-danger">Mark Removed</button>
                         </form>
                         <?php else: ?>

@@ -1,15 +1,28 @@
 <?php include 'layout_top.php'; ?>
 <?php require_once '../config/db.php'; ?>
+<?php require_once '../config/branch_filter.php'; ?>
 <?php
 $sql = "SELECT p.*, u.full_name AS entered_by_name, ru.full_name AS removed_by_name
         FROM products p
         LEFT JOIN users u ON p.entered_by = u.id
         LEFT JOIN users ru ON p.removed_by = ru.id
-        WHERE p.status = 'removed' OR p.is_removed = 1
+        WHERE (p.status = 'removed' OR p.is_removed = 1)" . ($branchFilterValue !== null ? $branchFilterSqlAlias : '') . "
         ORDER BY p.removed_on DESC";
-$items = $conn->query($sql);
+
+if ($branchFilterValue !== null) {
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param('s', $branchFilterValue);
+    $stmt->execute();
+    $items = $stmt->get_result();
+} else {
+    $items = $conn->query($sql);
+}
 ?>
+
 <h2 class="mb-4">Removed Products</h2>
+<?php if ($selectedBranch !== 'all'): ?>
+    <div class="text-muted small mb-3">Viewing: <?= htmlspecialchars($selectedBranch) ?></div>
+<?php endif; ?>
 <div class="card border-0 shadow-sm">
     <div class="card-body table-responsive">
         <table class="table table-striped align-middle">

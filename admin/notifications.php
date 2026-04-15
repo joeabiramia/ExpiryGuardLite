@@ -1,14 +1,27 @@
 <?php include 'layout_top.php'; ?>
 <?php require_once '../config/db.php'; ?>
+<?php require_once '../config/branch_filter.php'; ?>
 <?php
 $sql = "SELECT p.*, u.full_name AS entered_by_name
         FROM products p
         LEFT JOIN users u ON p.entered_by = u.id
-        WHERE p.status IN ('near_expiry', 'expired') AND p.is_removed = 0
+        WHERE p.status IN ('near_expiry', 'expired') AND p.is_removed = 0" . ($branchFilterValue !== null ? $branchFilterSqlAlias : '') . "
         ORDER BY p.expiry_date ASC";
-$items = $conn->query($sql);
+
+if ($branchFilterValue !== null) {
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param('s', $branchFilterValue);
+    $stmt->execute();
+    $items = $stmt->get_result();
+} else {
+    $items = $conn->query($sql);
+}
 ?>
+
 <h2 class="mb-4">Notifications</h2>
+<?php if ($selectedBranch !== 'all'): ?>
+    <div class="text-muted small mb-3">Viewing: <?= htmlspecialchars($selectedBranch) ?></div>
+<?php endif; ?>
 <div class="card border-0 shadow-sm">
     <div class="card-body table-responsive">
         <table class="table table-bordered align-middle">
