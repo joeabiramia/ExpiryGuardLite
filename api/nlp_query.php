@@ -60,6 +60,7 @@ curl_setopt_array($ch, [
 
 $response = curl_exec($ch);
 $curlError = curl_error($ch);
+$httpStatus = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
 if ($response === false) {
@@ -68,8 +69,31 @@ if ($response === false) {
 }
 
 $json = json_decode($response, true);
-if (!is_array($json) || empty($json['choices'][0]['message']['content'])) {
-    echo json_encode(['error' => 'Failed to parse OpenAI response.']);
+if (!is_array($json)) {
+    $preview = mb_substr($response, 0, 500);
+    echo json_encode([
+        'error' => 'Failed to parse OpenAI response.',
+        'status' => $httpStatus,
+        'response' => $preview
+    ]);
+    exit;
+}
+
+if (isset($json['error'])) {
+    echo json_encode([
+        'error' => 'OpenAI API error: ' . ($json['error']['message'] ?? json_encode($json['error'])),
+        'status' => $httpStatus,
+        'response' => $json
+    ]);
+    exit;
+}
+
+if (empty($json['choices'][0]['message']['content'])) {
+    echo json_encode([
+        'error' => 'OpenAI response did not contain message content.',
+        'status' => $httpStatus,
+        'response' => $json
+    ]);
     exit;
 }
 
