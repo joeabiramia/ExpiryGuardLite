@@ -4,7 +4,15 @@ require_once '../config/auth.php';
 require_once '../config/db.php';
 require_once '../config/openai.php';
 
-requireAdmin();
+if (!isset($_SESSION['user_id'])) {
+    echo json_encode(['error' => 'Not logged in.']);
+    exit;
+}
+
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
+    echo json_encode(['error' => 'Access denied. Admin only.']);
+    exit;
+}
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo json_encode(['error' => 'Invalid request method.']);

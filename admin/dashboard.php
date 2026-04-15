@@ -450,7 +450,14 @@ nlpForm.addEventListener('submit', async function (e) {
             body: new URLSearchParams({ query })
         });
 
-        const result = await response.json();
+        const text = await response.text();
+        let result;
+
+        try {
+            result = JSON.parse(text);
+        } catch (parseError) {
+            throw new Error(text || 'Invalid JSON response from server.');
+        }
 
         if (result.error) {
             nlpStatus.textContent = result.error;
