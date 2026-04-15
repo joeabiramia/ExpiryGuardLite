@@ -4,12 +4,8 @@ require_once '../config/auth.php';
 require_once '../config/db.php';
 require_once '../config/openai.php';
 
-if (!isset($_SESSION['user_id'])) {
-    echo json_encode(['error' => 'Not logged in.']);
-    exit;
-}
-
-if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
+requireLogin();
+if (!isAdminUser()) {
     echo json_encode(['error' => 'Access denied. Admin only.']);
     exit;
 }

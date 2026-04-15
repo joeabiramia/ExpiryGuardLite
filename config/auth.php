@@ -10,9 +10,13 @@ function requireLogin() {
     }
 }
 
+function isAdminUser() {
+    return isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin'], true);
+}
+
 function requireAdmin() {
     requireLogin();
-    if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
+    if (!isAdminUser()) {
         die('Access denied. Admin only.');
     }
 }
