@@ -11,6 +11,7 @@ if ($conn->connect_error) {
     if (!headers_sent()) {
         header('Content-Type: application/json; charset=utf-8');
     }
+    http_response_code(500);
     echo json_encode([
         'success' => false,
         'message' => 'Database connection failed: ' . $conn->connect_error,

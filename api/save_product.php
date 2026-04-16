@@ -20,7 +20,7 @@ set_exception_handler(function ($exception) {
 
 register_shutdown_function(function () {
     $error = error_get_last();
-    if ($error !== null) {
+    if ($error !== null && !headers_sent() && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
         while (ob_get_level() > 0) {
             ob_end_clean();
         }
@@ -34,8 +34,8 @@ register_shutdown_function(function () {
     }
 });
 
-require_once '../config/helpers.php';
-require_once '../config/db.php';
+require_once __DIR__ . '/../config/helpers.php';
+require_once __DIR__ . '/../config/db.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     jsonResponse(false, 'Invalid request method');
