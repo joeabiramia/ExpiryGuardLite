@@ -1,4 +1,8 @@
 <?php
+ob_start();
+ini_set('display_errors', '0');
+error_reporting(0);
+
 require_once '../config/helpers.php';
 require_once '../config/db.php';
 
