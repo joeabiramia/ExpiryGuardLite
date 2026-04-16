@@ -1,6 +1,6 @@
 <?php
-require_once '../config/db.php';
 require_once '../config/helpers.php';
+require_once '../config/db.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     jsonResponse(false, 'Invalid request method');
@@ -28,10 +28,16 @@ $check = $conn->prepare("
     WHERE barcode = ? AND expiry_date = ?
     LIMIT 1
 ");
-$check->bind_param("ss", $barcode, $expiry_date);
-$check->execute();
-$existing = $check->get_result()->fetch_assoc();
+if (!$check) {
+    jsonResponse(false, 'Database error', ['detail' => $conn->error]);
+}
 
+$check->bind_param("ss", $barcode, $expiry_date);
+if (!$check->execute()) {
+    jsonResponse(false, 'Database execution error', ['detail' => $check->error]);
+}
+
+$existing = $check->get_result()->fetch_assoc();
 if ($existing) {
     jsonResponse(false, 'This product batch already exists');
 }
@@ -45,18 +51,24 @@ $ruleStmt = $conn->prepare("
     WHERE category_name = ?
     LIMIT 1
 ");
+if (!$ruleStmt) {
+    jsonResponse(false, 'Database error', ['detail' => $conn->error]);
+}
+
 $ruleStmt->bind_param("s", $category);
-$ruleStmt->execute();
+if (!$ruleStmt->execute()) {
+    jsonResponse(false, 'Database execution error', ['detail' => $ruleStmt->error]);
+}
+
 $rule = $ruleStmt->get_result()->fetch_assoc();
-
 $alertDays = $rule ? (int)$rule['alert_days_before'] : 4;
-
-$status = 'active';
 
 if ($daysLeft < 0) {
     $status = 'expired';
 } elseif ($daysLeft <= $alertDays) {
     $status = 'near_expiry';
+} else {
+    $status = 'active';
 }
 
 $stmt = $conn->prepare("
@@ -64,6 +76,9 @@ $stmt = $conn->prepare("
     (barcode, product_name, category, expiry_date, status, entered_by, entered_on)
     VALUES (?, ?, ?, ?, ?, ?, NOW())
 ");
+if (!$stmt) {
+    jsonResponse(false, 'Database error', ['detail' => $conn->error]);
+}
 
 $stmt->bind_param(
     'sssssi',
@@ -75,11 +90,11 @@ $stmt->bind_param(
     $entered_by
 );
 
-if ($stmt->execute()) {
-    jsonResponse(true, 'Product saved successfully', [
-        'product_id' => $stmt->insert_id,
-        'status' => $status
-    ]);
+if (!$stmt->execute()) {
+    jsonResponse(false, 'Failed to save product', ['detail' => $stmt->error]);
 }
 
-jsonResponse(false, 'Failed to save product');
+jsonResponse(true, 'Product saved successfully', [
+    'product_id' => $stmt->insert_id,
+    'status' => $status
+]);

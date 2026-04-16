@@ -8,7 +8,15 @@ $password = getenv('DB_PASS') ?: '';
 $conn = new mysqli($host, $username, $password, $dbname, $port);
 
 if ($conn->connect_error) {
-    die('Database connection failed: ' . $conn->connect_error);
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=utf-8');
+    }
+    echo json_encode([
+        'success' => false,
+        'message' => 'Database connection failed: ' . $conn->connect_error,
+        'data' => new stdClass()
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
 }
 
 $conn->set_charset('utf8mb4');
