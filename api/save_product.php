@@ -3,6 +3,37 @@ ob_start();
 ini_set('display_errors', '0');
 error_reporting(0);
 
+header('Content-Type: application/json; charset=utf-8');
+
+set_exception_handler(function ($exception) {
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    echo json_encode([
+        'success' => false,
+        'message' => 'Internal server error',
+        'error' => $exception->getMessage(),
+        'data' => new stdClass()
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+});
+
+register_shutdown_function(function () {
+    $error = error_get_last();
+    if ($error !== null) {
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        echo json_encode([
+            'success' => false,
+            'message' => 'Internal server error',
+            'error' => $error['message'],
+            'data' => new stdClass()
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+});
+
 require_once '../config/helpers.php';
 require_once '../config/db.php';
 
