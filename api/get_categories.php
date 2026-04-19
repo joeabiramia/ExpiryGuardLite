@@ -21,8 +21,7 @@ $sql = "
     SELECT
         id,
         category_name,
-        alert_days,
-        description
+        alert_days_before
     FROM category_rules
     ORDER BY category_name ASC
 ";
