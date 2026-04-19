@@ -1,4 +1,6 @@
 <?php
+session_start();
+
 require_once '../config/db.php';
 require_once '../config/helpers.php';
 
@@ -6,27 +8,118 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     jsonResponse(false, 'Invalid request method');
 }
 
-$id = (int)($_POST['id'] ?? 0);
-
-if ($id <= 0) {
-    jsonResponse(false, 'User ID is required');
+if (!isset($_SESSION['user_id'])) {
+    jsonResponse(false, 'Please login again');
 }
 
-$usageCheck = $conn->prepare('SELECT COUNT(*) AS total FROM products WHERE entered_by = ? OR removed_by = ?');
-$usageCheck->bind_param('ii', $id, $id);
-$usageCheck->execute();
-$used = $usageCheck->get_result()->fetch_assoc();
+$loggedInUserId = (int) $_SESSION['user_id'];
 
-if ((int)$used['total'] > 0) {
-    jsonResponse(false, 'Cannot delete user because this user is linked to product records. Disable the account instead.');
+requirePermission($conn, $loggedInUserId, 'manage_users');
+
+$targetUserId = (int) ($_POST['id'] ?? 0);
+
+if ($targetUserId <= 0) {
+    jsonResponse(false, 'Invalid user');
 }
 
-$stmt = $conn->prepare('DELETE FROM users WHERE id = ?');
-$stmt->bind_param('i', $id);
+/*
+|--------------------------------------------------------------------------
+| Cannot delete yourself
+|--------------------------------------------------------------------------
+*/
 
-if ($stmt->execute()) {
-    jsonResponse(true, 'User deleted successfully');
+if ($targetUserId === $loggedInUserId) {
+    jsonResponse(false, 'You cannot delete yourself');
 }
 
-jsonResponse(false, 'Failed to delete user');
+/*
+|--------------------------------------------------------------------------
+| Get logged-in user
+|--------------------------------------------------------------------------
+*/
 
+$me = getLoggedInUser($conn, $loggedInUserId);
+
+if (!$me) {
+    jsonResponse(false, 'User not found');
+}
+
+/*
+|--------------------------------------------------------------------------
+| Get target user
+|--------------------------------------------------------------------------
+*/
+
+$stmt = $conn->prepare("
+    SELECT id, role, company_id, branch_id
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+");
+
+$stmt->bind_param("i", $targetUserId);
+$stmt->execute();
+
+$result = $stmt->get_result();
+
+if ($result->num_rows === 0) {
+    jsonResponse(false, 'Target user not found');
+}
+
+$target = $result->fetch_assoc();
+
+/*
+|--------------------------------------------------------------------------
+| Role hierarchy check
+|--------------------------------------------------------------------------
+*/
+
+$myLevel = getRoleLevel($me['role']);
+$targetLevel = getRoleLevel($target['role']);
+
+if ($targetLevel >= $myLevel) {
+    jsonResponse(false, 'You cannot delete this user');
+}
+
+/*
+|--------------------------------------------------------------------------
+| Company scope check
+|--------------------------------------------------------------------------
+*/
+
+if ($me['role'] !== 'super_admin') {
+    if ((int)$me['company_id'] !== (int)$target['company_id']) {
+        jsonResponse(false, 'Cross-company deletion not allowed');
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
+| Branch manager branch restriction
+|--------------------------------------------------------------------------
+*/
+
+if ($me['role'] === 'branch_manager') {
+    if ((int)$me['branch_id'] !== (int)$target['branch_id']) {
+        jsonResponse(false, 'You can only manage users in your branch');
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
+| Delete user
+|--------------------------------------------------------------------------
+*/
+
+$delete = $conn->prepare("
+    DELETE FROM users
+    WHERE id = ?
+");
+
+$delete->bind_param("i", $targetUserId);
+
+if (!$delete->execute()) {
+    jsonResponse(false, 'Delete failed');
+}
+
+jsonResponse(true, 'User deleted successfully');

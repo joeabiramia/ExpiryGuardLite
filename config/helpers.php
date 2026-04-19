@@ -205,6 +205,19 @@ function getLoggedInUser(mysqli $conn, int $userId)
         return null;
     }
 
+    function getRoleLevel(string $role): int
+{
+    $levels = [
+        'viewer' => 1,
+        'employee' => 2,
+        'branch_manager' => 3,
+        'company_admin' => 4,
+        'super_admin' => 5
+    ];
+
+    return $levels[$role] ?? 0;
+}
+
     $stmt->bind_param("i", $userId);
     $stmt->execute();
 
