@@ -119,7 +119,9 @@ $delete = $conn->prepare("
 $delete->bind_param("i", $targetUserId);
 
 if (!$delete->execute()) {
-    jsonResponse(false, 'Delete failed');
+    header("Location: ../admin/users.php?error=user_delete_failed");
+    exit;
 }
 
-jsonResponse(true, 'User deleted successfully');
+header("Location: ../admin/users.php?success=user_deleted");
+exit;

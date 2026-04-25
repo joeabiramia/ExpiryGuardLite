@@ -208,15 +208,17 @@ $users = $conn->query("
                                         </select>
                                     </div>
 
-                                    <div class="form-check">
-                                        <input
-                                            class="form-check-input"
-                                            type="checkbox"
-                                            name="is_active"
-                                            <?= !empty($user['is_active']) ? 'checked' : '' ?>
-                                        >
-                                        <label class="form-check-label">Active User</label>
-                                    </div>
+                                  <div class="mb-3">
+    <label class="form-label fw-semibold">User Status</label>
+    <select name="is_active" class="form-select" required>
+        <option value="1" <?= !empty($user['is_active']) ? 'selected' : '' ?>>
+            Active
+        </option>
+        <option value="0" <?= empty($user['is_active']) ? 'selected' : '' ?>>
+            Disabled
+        </option>
+    </select>
+</div>
                                 </div>
 
                                 <div class="modal-footer">
@@ -310,10 +312,13 @@ $users = $conn->query("
                         </select>
                     </div>
 
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" name="is_active" checked>
-                        <label class="form-check-label">Active User</label>
-                    </div>
+                   <div class="mb-3">
+    <label class="form-label fw-semibold">User Status</label>
+    <select name="is_active" class="form-select" required>
+        <option value="1" selected>Active</option>
+        <option value="0">Disabled</option>
+    </select>
+</div>
                 </div>
 
                 <div class="modal-footer">

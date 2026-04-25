@@ -65,7 +65,7 @@ $full_name  = trim($_POST['full_name'] ?? '');
 $username   = trim($_POST['username'] ?? '');
 $password   = $_POST['password'] ?? '';
 $role       = trim($_POST['role'] ?? 'employee');
-$is_active  = isset($_POST['is_active']) ? (int) $_POST['is_active'] : 1;
+$is_active = (isset($_POST['is_active']) && $_POST['is_active'] == '1') ? 1 : 0;
 
 $company_id = isset($_POST['company_id']) ? (int) $_POST['company_id'] : 0;
 $branch_id  = isset($_POST['branch_id']) ? (int) $_POST['branch_id'] : 0;
@@ -327,9 +327,9 @@ if ($password !== '') {
 }
 
 if (!$update->execute()) {
-    jsonResponse(false, 'Failed to update user', [
-        'error' => $update->error
-    ]);
+    header("Location: ../admin/users.php?error=user_update_failed");
+    exit;
 }
 
-jsonResponse(true, 'User updated successfully');
+header("Location: ../admin/users.php?success=user_updated");
+exit;
