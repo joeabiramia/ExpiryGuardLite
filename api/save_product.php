@@ -2,6 +2,14 @@
 ini_set('display_errors', '0');
 error_reporting(0);
 
+// Ensure all errors return JSON, never empty body
+set_exception_handler(function (Throwable $e) {
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['success' => false, 'message' => 'Server error: ' . $e->getMessage(), 'data' => new stdClass()]);
+    exit;
+});
+
 require_once __DIR__ . '/../config/helpers.php';
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/api_auth.php';
@@ -101,8 +109,10 @@ if (!$stmt) {
     jsonResponse(false, 'Database error', null, 500);
 }
 
+// Types: company_id(i) branch_id(i) barcode(s) product_name(s) category(s)
+//        quantity(i) unit(s) expiry_date(s) status(s) entered_by(i) notes(s)
 $stmt->bind_param(
-    'iisssssisss',
+    'iisssisssis',
     $company_id,
     $branch_id,
     $barcode,
