@@ -1,259 +1,128 @@
 <?php
-session_start();
-
-require_once '../config/db.php';
 require_once '../config/helpers.php';
+require_once '../config/db.php';
+require_once '../config/api_auth.php';
 
-/*
-|--------------------------------------------------------------------------
-| Only POST requests allowed
-|--------------------------------------------------------------------------
-*/
+addSecurityHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    jsonResponse(false, 'Invalid request method');
+    jsonResponse(false, 'Invalid request method', null, 405);
 }
 
-/*
-|--------------------------------------------------------------------------
-| Logged-in user security check
-|--------------------------------------------------------------------------
-*/
+if (session_status() === PHP_SESSION_NONE) session_start();
 
-if (!isset($_SESSION['user_id'])) {
-    jsonResponse(false, 'Session expired. Please login again.');
+// Accept both session (web) and admin_user_id param (mobile legacy)
+$loggedInUserId = 0;
+if (isset($_SESSION['user_id'])) {
+    $loggedInUserId = (int)$_SESSION['user_id'];
+} else {
+    $loggedInUserId = (int)($_POST['admin_user_id'] ?? 0);
 }
 
-$loggedInUserId = (int) $_SESSION['user_id'];
-
-/*
-|--------------------------------------------------------------------------
-| Permission check
-|--------------------------------------------------------------------------
-|
-| Only users with manage_users can create users
-|
-*/
+if ($loggedInUserId <= 0) {
+    jsonResponse(false, 'Authentication required', null, 401);
+}
 
 requirePermission($conn, $loggedInUserId, 'manage_users');
 
-/*
-|--------------------------------------------------------------------------
-| Get logged-in user info
-|--------------------------------------------------------------------------
-*/
-
-$loggedInUser = getLoggedInUser($conn, $loggedInUserId);
-
-if (!$loggedInUser) {
-    jsonResponse(false, 'Logged-in user not found');
+$me = getLoggedInUser($conn, $loggedInUserId);
+if (!$me) {
+    jsonResponse(false, 'Logged-in user not found', null, 401);
 }
 
-$creatorRole      = $loggedInUser['role'];
-$creatorCompanyId = (int) ($loggedInUser['company_id'] ?? 0);
-$creatorBranchId  = (int) ($loggedInUser['branch_id'] ?? 0);
+$creatorRole      = $me['role'];
+$creatorCompanyId = (int)($me['company_id'] ?? 0);
+$creatorBranchId  = (int)($me['branch_id']  ?? 0);
 
-/*
-|--------------------------------------------------------------------------
-| Incoming form data
-|--------------------------------------------------------------------------
-*/
-
-$full_name  = trim($_POST['full_name'] ?? '');
-$username   = trim($_POST['username'] ?? '');
-$password   = $_POST['password'] ?? '';
-$role       = trim($_POST['role'] ?? 'employee');
-$is_active = (isset($_POST['is_active']) && $_POST['is_active'] == '1') ? 1 : 0;
-
-$company_id = isset($_POST['company_id']) ? (int) $_POST['company_id'] : 0;
-$branch_id  = isset($_POST['branch_id']) ? (int) $_POST['branch_id'] : 0;
-
-/*
-|--------------------------------------------------------------------------
-| Basic validation
-|--------------------------------------------------------------------------
-*/
+$full_name = trim($_POST['full_name'] ?? '');
+$username  = trim($_POST['username']  ?? '');
+$password  = $_POST['password'] ?? '';
+$role      = trim($_POST['role']      ?? 'employee');
+$email     = trim($_POST['email']     ?? '');
+$phone     = trim($_POST['phone']     ?? '');
+$is_active = ((int)($_POST['is_active'] ?? 1) === 1) ? 1 : 0;
+$company_id = (int)($_POST['company_id'] ?? 0);
+$branch_id  = (int)($_POST['branch_id']  ?? 0);
 
 if ($full_name === '' || $username === '' || $password === '') {
-    jsonResponse(false, 'Full name, username and password are required');
+    jsonResponse(false, 'Full name, username, and password are required', null, 400);
 }
 
-/*
-|--------------------------------------------------------------------------
-| Allowed roles validation
-|--------------------------------------------------------------------------
-*/
-
-$allowedRoles = [
-    'super_admin',
-    'company_admin',
-    'branch_manager',
-    'employee',
-    'viewer'
-];
-
-if (!in_array($role, $allowedRoles)) {
-    jsonResponse(false, 'Invalid role selected');
+$allowedRoles = ['super_admin', 'company_admin', 'branch_manager', 'employee', 'viewer'];
+if (!in_array($role, $allowedRoles, true)) {
+    jsonResponse(false, 'Invalid role', null, 400);
 }
-
-/*
-|--------------------------------------------------------------------------
-| Role creation restrictions
-|--------------------------------------------------------------------------
-|
-| Example:
-| company_admin cannot create super_admin
-|
-*/
 
 if (!canCreateRole($creatorRole, $role)) {
-    jsonResponse(false, 'You are not allowed to create this role');
+    jsonResponse(false, 'You are not allowed to create this role', null, 403);
 }
 
-/*
-|--------------------------------------------------------------------------
-| Company / Branch scope enforcement
-|--------------------------------------------------------------------------
-|
-| Prevent cross-company creation
-|
-*/
-
+// Company / branch scope enforcement
 if ($creatorRole !== 'super_admin') {
     if ($company_id !== $creatorCompanyId) {
-        jsonResponse(false, 'You cannot create users outside your company');
+        jsonResponse(false, 'You cannot create users outside your company', null, 403);
     }
 }
-
-/*
-|--------------------------------------------------------------------------
-| Branch Manager restriction
-|--------------------------------------------------------------------------
-|
-| Branch manager can only create users in same branch
-|
-*/
 
 if ($creatorRole === 'branch_manager') {
     if ($branch_id !== $creatorBranchId) {
-        jsonResponse(false, 'You can only create users inside your branch');
+        jsonResponse(false, 'You can only create users in your branch', null, 403);
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Target role validation
-|--------------------------------------------------------------------------
-*/
-
-if ($role === 'super_admin') {
-    if ($company_id <= 0) {
-        jsonResponse(false, 'Company is required for Super Admin');
-    }
-
-    if ($branch_id <= 0) {
-        $branch_id = null;
-    }
+// Nullable branch for certain roles
+if (in_array($role, ['super_admin', 'company_admin', 'viewer'], true) && $branch_id <= 0) {
+    $branch_id = null;
 }
 
-if ($role === 'company_admin') {
-    if ($company_id <= 0) {
-        jsonResponse(false, 'Company is required for Company Admin');
-    }
-
-    if ($branch_id <= 0) {
-        $branch_id = null;
-    }
+if (in_array($role, ['branch_manager', 'employee'], true) && $branch_id <= 0) {
+    jsonResponse(false, 'Branch is required for this role', null, 400);
 }
 
-if (in_array($role, ['branch_manager', 'employee'])) {
-    if ($company_id <= 0) {
-        jsonResponse(false, 'Company is required');
-    }
-
-    if ($branch_id <= 0) {
-        jsonResponse(false, 'Branch is required');
-    }
-}
-
-if ($role === 'viewer') {
-    if ($company_id <= 0) {
-        jsonResponse(false, 'Company is required for Viewer');
-    }
-
-    if ($branch_id <= 0) {
-        $branch_id = null;
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| Username duplicate check
-|--------------------------------------------------------------------------
-*/
-
-$checkStmt = $conn->prepare("
-    SELECT id
-    FROM users
-    WHERE username = ?
-    LIMIT 1
-");
-
-$checkStmt->bind_param("s", $username);
+// Username duplicate check (scoped to company)
+$checkStmt = $conn->prepare("SELECT id FROM users WHERE username = ? AND company_id = ? LIMIT 1");
+$checkStmt->bind_param('si', $username, $company_id);
 $checkStmt->execute();
-
-$result = $checkStmt->get_result();
-
-if ($result->num_rows > 0) {
-    jsonResponse(false, 'Username already exists');
+$checkRes   = $checkStmt->get_result();
+$checkCount = $checkRes->num_rows;
+$checkRes->free();
+$checkStmt->close();
+if ($checkCount > 0) {
+    jsonResponse(false, 'Username already exists in this company', null, 409);
 }
-
-/*
-|--------------------------------------------------------------------------
-| Hash password
-|--------------------------------------------------------------------------
-*/
 
 $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
-
-/*
-|--------------------------------------------------------------------------
-| Insert user
-|--------------------------------------------------------------------------
-*/
+$created_by     = $loggedInUserId;
 
 $stmt = $conn->prepare("
-    INSERT INTO users (
-        full_name,
-        username,
-        password,
-        role,
-        company_id,
-        branch_id,
-        is_active,
-        created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+    INSERT INTO users
+        (full_name, username, password, role, email, phone,
+         company_id, branch_id, is_active, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
 ");
 
 if (!$stmt) {
-    jsonResponse(false, 'Database prepare failed');
+    jsonResponse(false, 'Database error', null, 500);
 }
 
 $stmt->bind_param(
-    "ssssiii",
-    $full_name,
-    $username,
-    $hashedPassword,
-    $role,
-    $company_id,
-    $branch_id,
-    $is_active
+    'ssssssiiii',
+    $full_name, $username, $hashedPassword, $role,
+    $email, $phone,
+    $company_id, $branch_id, $is_active, $created_by
 );
 
 if (!$stmt->execute()) {
-    header("Location: ../admin/users.php?error=user_create_failed");
-    exit;
+    jsonResponse(false, 'Failed to create user', null, 500);
 }
 
-header("Location: ../admin/users.php?success=user_added");
-exit;
+$newUserId = $stmt->insert_id;
+
+logActivity(
+    $conn, $company_id, $branch_id, $loggedInUserId,
+    'create_user', 'users', $newUserId,
+    "Created user: $username ($role)"
+);
+
+// Return JSON for both web (AJAX) and mobile
+jsonResponse(true, 'User created successfully', ['user_id' => $newUserId]);

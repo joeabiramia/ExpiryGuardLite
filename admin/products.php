@@ -1,252 +1,164 @@
-<?php include 'layout_top.php'; ?>
-<?php require_once '../config/db.php'; ?>
-<?php require_once '../config/branch_filter.php'; ?>
-
 <?php
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['remove_product'])) {
-    $id = (int)$_POST['product_id'];
-    $removed_by = (int)($_SESSION['user_id'] ?? 0);
-    $status = 'removed';
+include 'layout_top.php';
 
-    $stmt = $conn->prepare("
-        UPDATE products
-        SET
-            status = ?,
-            is_removed = 1,
-            removed_by = ?,
-            removed_on = NOW()
-        WHERE id = ?
-    ");
+$myRole      = $_SESSION['role']      ?? 'viewer';
+$myCompanyId = (int)($_SESSION['company_id'] ?? 0);
+$myBranchId  = (int)($_SESSION['branch_id']  ?? 0);
 
-    $stmt->bind_param('sii', $status, $removed_by, $id);
-    $stmt->execute();
+$statusFilter = trim($_GET['status'] ?? '');
+$search       = trim($_GET['q']      ?? '');
 
-    $redirect = 'products.php';
-    if ($selectedBranch !== 'all') {
-        $redirect .= '?branch=' . urlencode($selectedBranch);
-    }
+$sql    = "SELECT p.*, u.full_name AS entered_by_name, ru.full_name AS removed_by_name, b.branch_name
+           FROM products p
+           LEFT JOIN users    u  ON p.entered_by = u.id
+           LEFT JOIN users    ru ON p.removed_by  = ru.id
+           LEFT JOIN branches b  ON p.branch_id   = b.id
+           WHERE p.company_id = $myCompanyId";
 
-    header('Location: ' . $redirect);
-    exit();
+if (!in_array($myRole, ['super_admin','company_admin'], true) && $myBranchId > 0) {
+    $sql .= " AND p.branch_id = $myBranchId";
 }
-
-$sql = "
-    SELECT
-        p.*,
-        u.full_name AS entered_by_name,
-        ru.full_name AS removed_by_name
-    FROM products p
-    LEFT JOIN users u ON p.entered_by = u.id
-    LEFT JOIN users ru ON p.removed_by = ru.id
-    WHERE 1 = 1
-";
+if ($branchFilterValue !== null) $sql .= $branchFilterSqlAlias;
+if ($statusFilter !== '') $sql .= " AND p.status = '" . $conn->real_escape_string($statusFilter) . "'";
+if ($search !== '') $sql .= " AND (p.product_name LIKE '%" . $conn->real_escape_string($search) . "%' OR p.barcode LIKE '%" . $conn->real_escape_string($search) . "%' OR p.category LIKE '%" . $conn->real_escape_string($search) . "%')";
+$sql .= " ORDER BY p.entered_on DESC";
 
 if ($branchFilterValue !== null) {
-    $sql .= $branchFilterSqlAlias;
-}
-
-$sql .= " ORDER BY p.id DESC";
-
-if ($branchFilterValue !== null) {
-    $stmt = $conn->prepare($sql);
-    $stmt->bind_param('s', $branchFilterValue);
-    $stmt->execute();
-    $products = $stmt->get_result();
+    $stmt = $conn->prepare($sql); $stmt->bind_param('s', $branchFilterValue); $stmt->execute();
+    $products = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 } else {
-    $products = $conn->query($sql);
+    $products = $conn->query($sql)->fetch_all(MYSQLI_ASSOC);
 }
+
+$statusBadge = ['active'=>'badge-active','near_expiry'=>'badge-near','expired'=>'badge-expired','removed'=>'badge-removed'];
+$statusLabel = ['active'=>'Active','near_expiry'=>'Near Expiry','expired'=>'Expired','removed'=>'Removed'];
 ?>
 
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <div>
-        <h2 class="mb-1">Products</h2>
-
-        <?php if ($selectedBranch !== 'all'): ?>
-            <div class="text-muted small">
-                Viewing branch:
-                <strong><?= htmlspecialchars($selectedBranch) ?></strong>
-            </div>
-        <?php endif; ?>
-    </div>
+<div class="page-header">
+  <div class="page-header-text">
+    <h1>Products</h1>
+    <p>Inventory across your branch<?= $myRole === 'branch_manager' ? '' : 'es' ?></p>
+  </div>
+  <div style="display:flex;gap:8px">
+    <a href="export_csv.php?<?= http_build_query(['q'=>$search,'status'=>$statusFilter,'branch'=>$selectedBranch]) ?>" class="btn-eg btn-ghost-eg btn-sm-eg">
+      <i class="bi bi-download"></i> Export
+    </a>
+  </div>
 </div>
 
-<div class="card border-0 shadow-sm">
-    <div class="card-body table-responsive">
+<!-- Filters bar -->
+<div class="eg-card" style="margin-bottom:16px">
+  <div class="eg-card-body" style="padding:14px 16px">
+    <form method="GET" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <?php if ($branchFilterValue): ?><input type="hidden" name="branch" value="<?= htmlspecialchars($selectedBranch) ?>"><?php endif; ?>
+      <div class="search-wrap" style="flex:1;min-width:200px">
+        <i class="bi bi-search"></i>
+        <input type="text" name="q" placeholder="Search product, barcode, category…" value="<?= htmlspecialchars($search) ?>">
+      </div>
+      <select name="status" class="branch-select">
+        <option value="">All Statuses</option>
+        <option value="active"      <?= $statusFilter==='active'       ? 'selected':'' ?>>Active</option>
+        <option value="near_expiry" <?= $statusFilter==='near_expiry'   ? 'selected':'' ?>>Near Expiry</option>
+        <option value="expired"     <?= $statusFilter==='expired'       ? 'selected':'' ?>>Expired</option>
+        <option value="removed"     <?= $statusFilter==='removed'       ? 'selected':'' ?>>Removed</option>
+      </select>
+      <button type="submit" class="btn-eg btn-primary-eg btn-sm-eg"><i class="bi bi-funnel"></i> Filter</button>
+      <?php if ($search || $statusFilter): ?>
+      <a href="products.php<?= $branchFilterValue ? '?branch='.urlencode($selectedBranch) : '' ?>" class="btn-eg btn-ghost-eg btn-sm-eg">Clear</a>
+      <?php endif; ?>
+    </form>
+  </div>
+</div>
 
-        <table class="table table-hover align-middle">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Barcode</th>
-                    <th>Product</th>
-                    <th>Expiry Date</th>
-                    <th>Status</th>
-                    <th>Entered By</th>
-                    <th>Entered On</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
+<div class="eg-card">
+  <div class="eg-card-header">
+    <span class="eg-card-title"><i class="bi bi-box-seam me-2"></i>Products (<?= count($products) ?>)</span>
+  </div>
 
-            <tbody id="productsTableBody">
-                <?php while ($product = $products->fetch_assoc()): ?>
-                    <tr>
-                        <td><?= $product['id'] ?></td>
-
-                        <td><?= htmlspecialchars($product['barcode']) ?></td>
-
-                        <td><?= htmlspecialchars($product['product_name']) ?></td>
-
-                        <td><?= htmlspecialchars($product['expiry_date']) ?></td>
-
-                        <td>
-                            <span class="badge bg-<?php
-                                echo $product['status'] === 'active'
-                                    ? 'success'
-                                    : (
-                                        $product['status'] === 'near_expiry'
-                                            ? 'warning text-dark'
-                                            : (
-                                                $product['status'] === 'expired'
-                                                    ? 'danger'
-                                                    : 'secondary'
-                                            )
-                                    );
-                            ?>">
-                                <?= htmlspecialchars($product['status']) ?>
-                            </span>
-                        </td>
-
-                        <td>
-                            <?= htmlspecialchars($product['entered_by_name'] ?? 'N/A') ?>
-                        </td>
-
-                        <td>
-                            <?= htmlspecialchars($product['entered_on']) ?>
-                        </td>
-
-                        <td>
-                            <?php if ((int)$product['is_removed'] === 0): ?>
-                                <form
-                                    method="POST"
-                                    class="d-inline"
-                                    onsubmit="return confirm('Mark this product as removed?');"
-                                >
-                                    <input
-                                        type="hidden"
-                                        name="product_id"
-                                        value="<?= $product['id'] ?>"
-                                    >
-
-                                    <input
-                                        type="hidden"
-                                        name="branch"
-                                        value="<?= htmlspecialchars($selectedBranch) ?>"
-                                    >
-
-                                    <button
-                                        name="remove_product"
-                                        class="btn btn-sm btn-outline-danger"
-                                    >
-                                        Mark Removed
-                                    </button>
-                                </form>
-                            <?php else: ?>
-                                <span class="text-muted small">
-                                    Removed by
-                                    <?= htmlspecialchars($product['removed_by_name'] ?? 'N/A') ?>
-                                </span>
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                <?php endwhile; ?>
-            </tbody>
-
-        </table>
-    </div>
+  <div class="eg-table-wrap">
+    <table class="eg-table" id="productsTable">
+      <thead>
+        <tr>
+          <th>Product</th>
+          <th>Category</th>
+          <th>Expiry Date</th>
+          <th>Qty</th>
+          <th>Status</th>
+          <th>Branch</th>
+          <th>Entered By</th>
+          <th>Entered On</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="productsBody">
+      <?php if (empty($products)): ?>
+        <tr><td colspan="9"><div class="empty-state"><i class="bi bi-box-seam"></i><p>No products found.</p></div></td></tr>
+      <?php endif; ?>
+      <?php foreach ($products as $p): ?>
+        <tr id="row_<?= (int)$p['id'] ?>">
+          <td>
+            <div style="font-weight:600;font-size:.85rem"><?= htmlspecialchars($p['product_name']) ?></div>
+            <div style="font-size:.73rem;color:var(--text-muted)"><?= htmlspecialchars($p['barcode']) ?></div>
+          </td>
+          <td style="font-size:.82rem"><?= htmlspecialchars($p['category'] ?? '—') ?></td>
+          <td style="font-size:.82rem"><?= date('M j, Y', strtotime($p['expiry_date'])) ?></td>
+          <td style="font-size:.82rem"><?= (int)$p['quantity'] ?></td>
+          <td><span class="badge-eg <?= $statusBadge[$p['status']] ?? 'badge-removed' ?>"><?= $statusLabel[$p['status']] ?? $p['status'] ?></span></td>
+          <td style="font-size:.78rem;color:var(--text-muted)"><?= htmlspecialchars($p['branch_name'] ?? '—') ?></td>
+          <td style="font-size:.78rem;color:var(--text-muted)"><?= htmlspecialchars($p['entered_by_name'] ?? '—') ?></td>
+          <td style="font-size:.78rem;color:var(--text-muted)"><?= date('M j, Y', strtotime($p['entered_on'])) ?></td>
+          <td>
+            <?php if (!(int)$p['is_removed']): ?>
+              <?php if (!in_array($myRole, ['viewer'], true)): ?>
+              <button class="btn-eg btn-ghost-eg btn-xs-eg" style="color:var(--red)"
+                onclick="removeProduct(<?= (int)$p['id'] ?>, '<?= htmlspecialchars($p['product_name'],ENT_QUOTES) ?>')">
+                <i class="bi bi-trash3"></i> Remove
+              </button>
+              <?php else: ?>
+              <span style="font-size:.74rem;color:var(--text-muted)">—</span>
+              <?php endif; ?>
+            <?php else: ?>
+            <span style="font-size:.74rem;color:var(--text-muted)">Removed by <?= htmlspecialchars($p['removed_by_name'] ?? '—') ?></span>
+            <?php endif; ?>
+          </td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
 </div>
 
 <script>
-function getStatusBadge(status) {
-    if (status === 'active') {
-        return '<span class="badge bg-success">active</span>';
-    }
-
-    if (status === 'near_expiry') {
-        return '<span class="badge bg-warning text-dark">near_expiry</span>';
-    }
-
-    if (status === 'expired') {
-        return '<span class="badge bg-danger">expired</span>';
-    }
-
-    return '<span class="badge bg-secondary">' + status + '</span>';
+async function removeProduct(id, name) {
+  if (!confirm(`Remove "${name}" from inventory? This cannot be undone.`)) return;
+  const fd = new FormData();
+  fd.append('product_id', id);
+  const res  = await fetch('../api/mark_removed.php', { method: 'POST', body: fd });
+  const json = await res.json();
+  showToast(json.success ? 'Product removed' : (json.message || 'Failed'), json.success ? 'ok' : 'err');
+  if (json.success) setTimeout(() => location.reload(), 700);
 }
 
-function loadProductsLive() {
+// Live refresh every 30s (no full reload — just updates status badges)
+setInterval(async () => {
+  try {
     const branch = "<?= htmlspecialchars($selectedBranch) ?>";
-
-    fetch(`../api/live_products.php?branch=${encodeURIComponent(branch)}`)
-        .then(response => response.json())
-        .then(result => {
-            if (!result.success) {
-                console.error(result.message);
-                return;
-            }
-
-            let html = '';
-
-            result.data.forEach(product => {
-                let actions = '';
-
-                if (parseInt(product.is_removed) === 0) {
-                    actions = `
-                        <form method="POST"
-                              class="d-inline"
-                              onsubmit="return confirm('Mark this product as removed?');">
-                            <input type="hidden"
-                                   name="product_id"
-                                   value="${product.id}">
-
-                            <input type="hidden"
-                                   name="branch"
-                                   value="${branch}">
-
-                            <button name="remove_product"
-                                    class="btn btn-sm btn-outline-danger">
-                                Mark Removed
-                            </button>
-                        </form>
-                    `;
-                } else {
-                    actions = `
-                        <span class="text-muted small">
-                            Removed by ${product.removed_by_name ?? 'N/A'}
-                        </span>
-                    `;
-                }
-
-                html += `
-                    <tr>
-                        <td>${product.id}</td>
-                        <td>${product.barcode}</td>
-                        <td>${product.product_name}</td>
-                        <td>${product.expiry_date}</td>
-                        <td>${getStatusBadge(product.status)}</td>
-                        <td>${product.entered_by_name ?? 'N/A'}</td>
-                        <td>${product.entered_on}</td>
-                        <td>${actions}</td>
-                    </tr>
-                `;
-            });
-
-            document.getElementById('productsTableBody').innerHTML = html;
-        })
-        .catch(error => {
-            console.error('Live update failed:', error);
-        });
-}
-
-setInterval(loadProductsLive, 10000);
+    const res  = await fetch(`../api/live_products.php?branch=${encodeURIComponent(branch)}`);
+    const json = await res.json();
+    if (!json.success) return;
+    const badgeMap = { active:'badge-active', near_expiry:'badge-near', expired:'badge-expired', removed:'badge-removed' };
+    const labelMap = { active:'Active', near_expiry:'Near Expiry', expired:'Expired', removed:'Removed' };
+    json.data.forEach(p => {
+      const row = document.getElementById(`row_${p.id}`);
+      if (!row) return;
+      const badge = row.querySelector('.badge-eg');
+      if (badge) {
+        badge.className = `badge-eg ${badgeMap[p.status] || 'badge-removed'}`;
+        badge.textContent = labelMap[p.status] || p.status;
+      }
+    });
+  } catch {}
+}, 30000);
 </script>
 
 <?php include 'layout_bottom.php'; ?>

@@ -1,106 +1,57 @@
 <?php
-require_once '../config/db.php';
 require_once '../config/helpers.php';
+require_once '../config/db.php';
+require_once '../config/api_auth.php';
 
-if (!function_exists('apiResponse')) {
-    function apiResponse($success, $message, $data = null, $code = 200) {
-        http_response_code($code);
-        header('Content-Type: application/json');
-        echo json_encode([
-            'success' => $success,
-            'message' => $message,
-            'data' => $data
-        ]);
-        exit;
-    }
-}
-
-function requireAdminAccess(mysqli $conn, int $adminUserId): array {
-    if ($adminUserId <= 0) {
-        apiResponse(false, 'admin_user_id is required', null, 400);
-    }
-
-    $stmt = $conn->prepare("
-        SELECT id, role, company_id, branch_id, is_active
-        FROM users
-        WHERE id = ?
-        LIMIT 1
-    ");
-    $stmt->bind_param('i', $adminUserId);
-    $stmt->execute();
-    $user = $stmt->get_result()->fetch_assoc();
-
-    if (!$user) {
-        apiResponse(false, 'Admin user not found', null, 404);
-    }
-
-    if ((int)$user['is_active'] !== 1) {
-        apiResponse(false, 'Admin user is inactive', null, 403);
-    }
-
-    $allowedRoles = ['super_admin', 'company_admin', 'branch_manager'];
-    if (!in_array($user['role'], $allowedRoles, true)) {
-        apiResponse(false, 'Access denied', null, 403);
-    }
-
-    return $user;
-}
+addSecurityHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-    apiResponse(false, 'Invalid request method', null, 405);
+    jsonResponse(false, 'Invalid request method', null, 405);
 }
 
-$adminUserId = (int)($_GET['admin_user_id'] ?? 0);
-$admin = requireAdminAccess($conn, $adminUserId);
+$admin = resolveAdminApiUser($conn);
 
-$sql = "
-    SELECT
-        u.id,
-        u.full_name,
-        u.username,
-        u.role,
-        u.email,
-        u.phone,
-        u.is_active,
-        u.last_login,
-        u.created_at,
-        c.id AS company_id,
-        c.company_name,
-        b.id AS branch_id,
-        b.branch_name
+$sql    = "
+    SELECT u.id, u.full_name, u.username, u.role, u.email, u.phone,
+           u.is_active, u.last_login, u.created_at, u.created_by,
+           c.id AS company_id, c.company_name,
+           b.id AS branch_id, b.branch_name,
+           cb.full_name AS created_by_name
     FROM users u
     INNER JOIN companies c ON u.company_id = c.id
-    LEFT JOIN branches b ON u.branch_id = b.id
+    LEFT JOIN  branches  b ON u.branch_id  = b.id
+    LEFT JOIN  users     cb ON u.created_by = cb.id
     WHERE 1 = 1
 ";
-
 $params = [];
-$types = '';
+$types  = '';
 
-if ($admin['role'] === 'company_admin' || $admin['role'] === 'branch_manager') {
-    $sql .= " AND u.company_id = ?";
+if (in_array($admin['role'], ['company_admin', 'branch_manager'], true)) {
+    $sql   .= ' AND u.company_id = ?';
     $types .= 'i';
     $params[] = (int)$admin['company_id'];
 }
 
 if ($admin['role'] === 'branch_manager') {
-    $sql .= " AND (u.branch_id = ? OR u.branch_id IS NULL)";
-    $types .= 'i';
+    // Branch managers see only users in their branch that they created
+    $sql   .= ' AND u.branch_id = ? AND u.created_by = ?';
+    $types .= 'ii';
     $params[] = (int)$admin['branch_id'];
+    $params[] = (int)$admin['id'];
 }
 
-$sql .= " ORDER BY u.created_at DESC";
+$sql .= ' ORDER BY u.created_at DESC';
 
 $stmt = $conn->prepare($sql);
 if ($types !== '') {
     $stmt->bind_param($types, ...$params);
 }
 $stmt->execute();
-$result = $stmt->get_result();
 
 $data = [];
+$result = $stmt->get_result();
 while ($row = $result->fetch_assoc()) {
     $data[] = $row;
 }
 
-apiResponse(true, 'Users loaded successfully', $data);
+jsonResponse(true, 'Users loaded successfully', $data);

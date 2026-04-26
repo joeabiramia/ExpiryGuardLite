@@ -3,20 +3,28 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-function requireLogin() {
+function requireLogin(): void
+{
     if (!isset($_SESSION['user_id'])) {
-        header('Location: ../admin/login.php');
+        header('Location: /index.php');
         exit();
     }
 }
 
-function isAdminUser() {
-    return isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin', 'super_admin'], true);
+function isAdminUser(): bool
+{
+    return isset($_SESSION['role']) && in_array(
+        $_SESSION['role'],
+        ['super_admin', 'company_admin', 'branch_manager'],
+        true
+    );
 }
 
-function requireAdmin() {
+function requireAdmin(): void
+{
     requireLogin();
     if (!isAdminUser()) {
-        die('Access denied. Admin only.');
+        http_response_code(403);
+        die('Access denied.');
     }
 }

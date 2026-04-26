@@ -1,503 +1,311 @@
 <?php
 include 'layout_top.php';
-require_once '../config/branch_filter.php';
 
-$search = trim($_GET['q'] ?? '');
+$myUserId    = (int)($_SESSION['user_id']    ?? 0);
+$myRole      = $_SESSION['role']             ?? 'viewer';
+$myCompanyId = (int)($_SESSION['company_id'] ?? 0);
+$myBranchId  = (int)($_SESSION['branch_id']  ?? 0);
 
+// Scoped WHERE for single-table queries (no alias)
+$scopeWhere  = "WHERE company_id = $myCompanyId";
+// Scoped WHERE for aliased queries (products p JOIN branches b)
+$scopeWhereP = "WHERE p.company_id = $myCompanyId";
+$scopeParams = [];
+$scopeTypes  = '';
+
+if (!in_array($myRole, ['super_admin','company_admin'], true) && $myBranchId > 0) {
+    $scopeWhere  .= " AND branch_id = $myBranchId";
+    $scopeWhereP .= " AND p.branch_id = $myBranchId";
+}
+if ($branchFilterValue !== null) {
+    $scopeWhere  .= $branchFilterSql;
+    $scopeWhereP .= str_replace('`branch_id`', 'p.`branch_id`', $branchFilterSql);
+    $scopeTypes   = 's';
+    $scopeParams  = [$branchFilterValue];
+}
+
+function dashCount(mysqli $conn, string $sql, string $t = '', array $p = []): int {
+    $stmt = $conn->prepare($sql);
+    if ($t !== '') $stmt->bind_param($t, ...$p);
+    $stmt->execute();
+    $res   = $stmt->get_result();
+    $total = (int)$res->fetch_assoc()['total'];
+    $res->free();
+    $stmt->close();
+    return $total;
+}
+
+$base = "SELECT COUNT(*) AS total FROM products $scopeWhere";
 $stats = [
-    'total_products' => 0,
-    'active_products' => 0,
-    'near_expiry' => 0,
-    'expired' => 0,
-    'removed' => 0,
-    'total_users' => 0
+    'total'       => dashCount($conn, $base, $scopeTypes, $scopeParams),
+    'active'      => dashCount($conn, "$base AND status='active' AND is_removed=0", $scopeTypes, $scopeParams),
+    'near_expiry' => dashCount($conn, "$base AND status='near_expiry' AND is_removed=0", $scopeTypes, $scopeParams),
+    'expired'     => dashCount($conn, "$base AND status='expired' AND is_removed=0", $scopeTypes, $scopeParams),
+    'removed'     => dashCount($conn, "$base AND (status='removed' OR is_removed=1)", $scopeTypes, $scopeParams),
+    'users'       => dashCount($conn, "SELECT COUNT(*) AS total FROM users WHERE company_id = $myCompanyId", '', []),
 ];
 
-$map = [
-    'total_products' => "SELECT COUNT(*) AS total FROM products WHERE 1=1" . $branchFilterSql,
-    'active_products' => "SELECT COUNT(*) AS total FROM products WHERE status='active' AND is_removed=0" . $branchFilterSql,
-    'near_expiry' => "SELECT COUNT(*) AS total FROM products WHERE status='near_expiry' AND is_removed=0" . $branchFilterSql,
-    'expired' => "SELECT COUNT(*) AS total FROM products WHERE status='expired' AND is_removed=0" . $branchFilterSql,
-    'removed' => "SELECT COUNT(*) AS total FROM products WHERE (status='removed' OR is_removed=1)" . $branchFilterSql,
-    'total_users' => "SELECT COUNT(*) AS total FROM users"
-];
+// Status chart data
+$statusStmt = $conn->prepare("SELECT status, COUNT(*) AS total FROM products $scopeWhere AND is_removed=0 GROUP BY status");
+if ($scopeTypes !== '') $statusStmt->bind_param($scopeTypes, ...$scopeParams);
+$statusStmt->execute();
+$statusRes  = $statusStmt->get_result();
+$statusRows = $statusRes->fetch_all(MYSQLI_ASSOC);
+$statusRes->free();
+$statusStmt->close();
 
-foreach ($map as $key => $sql) {
-    if ($branchFilterValue !== null && strpos($sql, '?') !== false) {
-        $stmt = $conn->prepare($sql);
-        $stmt->bind_param('s', $branchFilterValue);
-        $stmt->execute();
-        $row = $stmt->get_result()->fetch_assoc();
-    } else {
-        $row = $conn->query($sql)->fetch_assoc();
-    }
-    $stats[$key] = (int)$row['total'];
-}
+// 10-day trend
+$trendStmt = $conn->prepare("SELECT DATE(entered_on) AS day, COUNT(*) AS total FROM products $scopeWhere AND entered_on >= DATE_SUB(CURDATE(), INTERVAL 10 DAY) GROUP BY day ORDER BY day ASC");
+if ($scopeTypes !== '') $trendStmt->bind_param($scopeTypes, ...$scopeParams);
+$trendStmt->execute();
+$trendRes  = $trendStmt->get_result();
+$trendRows = $trendRes->fetch_all(MYSQLI_ASSOC);
+$trendRes->free();
+$trendStmt->close();
 
-$statusSql = "SELECT status, COUNT(*) AS total FROM products WHERE is_removed = 0" . $branchFilterSql . " GROUP BY status";
-if ($branchFilterValue !== null) {
-    $stmt = $conn->prepare($statusSql);
-    $stmt->bind_param('s', $branchFilterValue);
-    $stmt->execute();
-    $statusResults = $stmt->get_result();
-} else {
-    $statusResults = $conn->query($statusSql);
-}
+// Top 5 products
+$topStmt = $conn->prepare("SELECT product_name, COUNT(*) AS total FROM products $scopeWhere GROUP BY product_name ORDER BY total DESC LIMIT 5");
+if ($scopeTypes !== '') $topStmt->bind_param($scopeTypes, ...$scopeParams);
+$topStmt->execute();
+$topRes      = $topStmt->get_result();
+$topProducts = $topRes->fetch_all(MYSQLI_ASSOC);
+$topRes->free();
+$topStmt->close();
 
-$statuses = [];
-while ($row = $statusResults->fetch_assoc()) {
-    $statuses[] = [$row['status'], (int)$row['total']];
-}
+// Recent entries — uses aliased query to avoid ambiguous company_id
+$recentStmt = $conn->prepare("SELECT p.product_name, p.barcode, p.expiry_date, p.status, p.entered_on, b.branch_name FROM products p LEFT JOIN branches b ON p.branch_id = b.id $scopeWhereP ORDER BY p.entered_on DESC LIMIT 8");
+if ($scopeTypes !== '') $recentStmt->bind_param($scopeTypes, ...$scopeParams);
+$recentStmt->execute();
+$recentRes      = $recentStmt->get_result();
+$recentProducts = $recentRes->fetch_all(MYSQLI_ASSOC);
+$recentRes->free();
+$recentStmt->close();
 
-$trendSql = "SELECT DATE(entered_on) AS day, COUNT(*) AS total
-    FROM products
-    WHERE entered_on >= DATE_SUB(CURDATE(), INTERVAL 10 DAY)" . $branchFilterSql . "
-    GROUP BY day
-    ORDER BY day ASC";
-
-if ($branchFilterValue !== null) {
-    $stmt = $conn->prepare($trendSql);
-    $stmt->bind_param('s', $branchFilterValue);
-    $stmt->execute();
-    $trendResults = $stmt->get_result();
-} else {
-    $trendResults = $conn->query($trendSql);
-}
-
-$trendLabels = [];
-$trendData = [];
-while ($row = $trendResults->fetch_assoc()) {
-    $trendLabels[] = $row['day'];
-    $trendData[] = (int)$row['total'];
-}
-
-$topProductsSql = "SELECT product_name, COUNT(*) AS total
-    FROM products
-    WHERE 1=1" . $branchFilterSql . "
-    GROUP BY product_name
-    ORDER BY total DESC
-    LIMIT 5";
-
-if ($branchFilterValue !== null) {
-    $stmt = $conn->prepare($topProductsSql);
-    $stmt->bind_param('s', $branchFilterValue);
-    $stmt->execute();
-    $topProductsResults = $stmt->get_result();
-} else {
-    $topProductsResults = $conn->query($topProductsSql);
-}
-
-$topProducts = [];
-while ($row = $topProductsResults->fetch_assoc()) {
-    $topProducts[] = $row;
-}
-
-$topBranches = [];
-if ($branchColumn) {
-    $topBranchesSql = "SELECT `$branchColumn` AS branch, COUNT(*) AS total
-        FROM products
-        WHERE 1=1" . $branchFilterSql . "
-        GROUP BY `$branchColumn`
-        ORDER BY total DESC
-        LIMIT 5";
-
-    if ($branchFilterValue !== null) {
-        $stmt = $conn->prepare($topBranchesSql);
-        $stmt->bind_param('s', $branchFilterValue);
-        $stmt->execute();
-        $branchResults = $stmt->get_result();
-    } else {
-        $branchResults = $conn->query($topBranchesSql);
-    }
-
-    while ($row = $branchResults->fetch_assoc()) {
-        $topBranches[] = $row;
-    }
-}
-?>
-
-<div class="dashboard-hero mb-4">
-    <div class="card border-0 shadow-sm py-3 px-4">
-        <p class="text-uppercase text-muted mb-2 small">Executive insights</p>
-        <h1 class="h3 mb-2 fw-bold">Inventory command centre</h1>
-        <p class="text-muted mb-0">
-            Premium analytics for supermarkets, pharmacies, warehouses and retail enterprises.
-            <?php if ($selectedBranch !== 'all'): ?>
-                <span class="fw-semibold">Viewing: <?= htmlspecialchars($selectedBranch) ?></span>
-            <?php endif; ?>
-        </p>
-    </div>
-</div>
-
-<?php
-$cards = [
-    ['Total Products', $stats['total_products'], 'Inventory', 'secondary', 'Across all batches'],
-    ['Active Products', $stats['active_products'], 'Live', 'success', 'Currently valid'],
-    ['Near Expiry', $stats['near_expiry'], 'Urgent', 'warning', 'Requires action'],
-    ['Expired', $stats['expired'], 'Critical', 'danger', 'Immediate removal'],
-    ['Removed', $stats['removed'], 'Archived', 'secondary', 'Historical records'],
-    ['Total Users', $stats['total_users'], 'Team', 'info', 'Admin + employees']
+$statusColors = [
+    'active'     => ['var(--green)', 'var(--green-light)'],
+    'near_expiry'=> ['var(--yellow)', 'var(--yellow-light)'],
+    'expired'    => ['var(--red)', 'var(--red-light)'],
+    'removed'    => ['#64748b', '#f1f5f9'],
 ];
 ?>
 
-<div class="row g-3 mb-4">
-    <?php foreach ($cards as [$title, $value, $badge, $color, $meta]): ?>
-        <div class="col-lg-4 col-md-6">
-            <div class="card border-0 shadow-sm h-100">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-start mb-3">
-                        <small class="text-uppercase text-muted"><?= $title ?></small>
-                        <span class="badge rounded-pill bg-<?= $color ?> <?= in_array($color, ['warning', 'secondary']) ? 'text-dark' : 'text-white' ?>">
-                            <?= $badge ?>
-                        </span>
-                    </div>
-                    <div class="display-4 fw-bold"><?= $value ?></div>
-                    <div class="small text-muted mt-2"><?= $meta ?></div>
-                </div>
-            </div>
-        </div>
-    <?php endforeach; ?>
+<!-- Page header -->
+<div class="page-header">
+  <div class="page-header-text">
+    <h1>Dashboard</h1>
+    <p>Inventory health overview<?= $selectedBranch !== 'all' ? ' — filtered by branch' : '' ?></p>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <a href="export_csv.php" class="btn-eg btn-ghost-eg btn-sm-eg"><i class="bi bi-download"></i> Export CSV</a>
+    <a href="products.php<?= $branchFilterValue ? '?branch='.urlencode($selectedBranch) : '' ?>" class="btn-eg btn-primary-eg btn-sm-eg"><i class="bi bi-plus-lg"></i> Add Product</a>
+  </div>
 </div>
 
-<div class="row g-3 mb-4">
-    <div class="col-lg-6">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body">
-                <h5 class="mb-1 fw-semibold">Products by status</h5>
-                <p class="text-muted small mb-3">Inventory health snapshot</p>
-                <div class="chart-container">
-                    <canvas id="statusChart"></canvas>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="col-lg-6">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body">
-                <h5 class="mb-1 fw-semibold">Products added per day</h5>
-                <p class="text-muted small mb-3">Last 10 days</p>
-                <div class="chart-container">
-                    <canvas id="trendChart"></canvas>
-                </div>
-            </div>
-        </div>
-    </div>
+<!-- KPI Cards -->
+<div class="kpi-grid">
+  <div class="kpi-card" style="--kpi-color:var(--blue);--kpi-bg:var(--blue-light)">
+    <div class="kpi-icon"><i class="bi bi-box-seam"></i></div>
+    <div class="kpi-value"><?= number_format($stats['total']) ?></div>
+    <div class="kpi-label">Total Products</div>
+  </div>
+  <div class="kpi-card" style="--kpi-color:var(--green);--kpi-bg:var(--green-light)">
+    <div class="kpi-icon"><i class="bi bi-check-circle"></i></div>
+    <div class="kpi-value"><?= number_format($stats['active']) ?></div>
+    <div class="kpi-label">Active</div>
+  </div>
+  <div class="kpi-card" style="--kpi-color:var(--yellow);--kpi-bg:var(--yellow-light)">
+    <div class="kpi-icon"><i class="bi bi-exclamation-triangle"></i></div>
+    <div class="kpi-value"><?= number_format($stats['near_expiry']) ?></div>
+    <div class="kpi-label">Near Expiry</div>
+  </div>
+  <div class="kpi-card" style="--kpi-color:var(--red);--kpi-bg:var(--red-light)">
+    <div class="kpi-icon"><i class="bi bi-x-circle"></i></div>
+    <div class="kpi-value"><?= number_format($stats['expired']) ?></div>
+    <div class="kpi-label">Expired</div>
+  </div>
+  <div class="kpi-card" style="--kpi-color:#64748b;--kpi-bg:#f1f5f9">
+    <div class="kpi-icon"><i class="bi bi-trash3"></i></div>
+    <div class="kpi-value"><?= number_format($stats['removed']) ?></div>
+    <div class="kpi-label">Removed</div>
+  </div>
+  <div class="kpi-card" style="--kpi-color:var(--purple);--kpi-bg:var(--purple-light)">
+    <div class="kpi-icon"><i class="bi bi-people"></i></div>
+    <div class="kpi-value"><?= number_format($stats['users']) ?></div>
+    <div class="kpi-label">Team Members</div>
+  </div>
 </div>
 
-<div class="card border-0 shadow-sm mb-4">
-    <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
-            <div>
-                <h5 class="mb-1">Inventory toolkit</h5>
-                <p class="text-muted mb-0 small">Search and operational quick actions</p>
-            </div>
+<!-- Charts row -->
+<div style="display:grid;grid-template-columns:1fr 1.6fr;gap:20px;margin-bottom:20px" class="charts-row">
 
-            <div class="d-flex gap-2 flex-wrap">
-                <a href="export_csv.php?<?= http_build_query(['q' => $search, 'branch' => $selectedBranch]) ?>" class="btn btn-outline-secondary btn-sm">
-                    Export CSV
-                </a>
-                <a href="analytics.php?<?= http_build_query(['branch' => $selectedBranch]) ?>" class="btn btn-outline-secondary btn-sm">
-                    Analytics
-                </a>
-                <a href="products.php?<?= http_build_query(['branch' => $selectedBranch]) ?>" class="btn btn-primary btn-sm">
-                    Add Product
-                </a>
-            </div>
-        </div>
-
-        <form method="GET" class="row g-2">
-            <input type="hidden" name="branch" value="<?= htmlspecialchars($selectedBranch) ?>">
-            <div class="col-lg-8">
-                <div class="input-group">
-                    <span class="input-group-text"><i class="bi bi-search"></i></span>
-                    <input
-                        type="text"
-                        name="q"
-                        class="form-control"
-                        placeholder="Search products, barcode, status"
-                        value="<?= htmlspecialchars($search) ?>"
-                    >
-                </div>
-            </div>
-            <div class="col-lg-4 d-grid">
-                <button class="btn btn-primary">Apply Search</button>
-            </div>
-        </form>
+  <div class="eg-card" style="margin-bottom:0">
+    <div class="eg-card-header">
+      <span class="eg-card-title"><i class="bi bi-pie-chart me-2"></i>Status Distribution</span>
     </div>
+    <div class="eg-card-body">
+      <div style="height:220px;position:relative">
+        <canvas id="statusChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="eg-card" style="margin-bottom:0">
+    <div class="eg-card-header">
+      <span class="eg-card-title"><i class="bi bi-graph-up me-2"></i>Products Added — Last 10 Days</span>
+    </div>
+    <div class="eg-card-body">
+      <div style="height:220px;position:relative">
+        <canvas id="trendChart"></canvas>
+      </div>
+    </div>
+  </div>
+
 </div>
 
-<div class="card border-0 shadow-sm mb-4">
-    <div class="card-body">
-        <h5 class="mb-3">Natural language SQL query</h5>
-        <p class="text-muted small mb-3">Ask the system for inventory data in plain English. Only SELECT queries are allowed.</p>
-        <form id="nlpQueryForm" class="row g-3">
-            <div class="col-lg-10">
-                <input type="text" id="query" name="query" class="form-control" placeholder="e.g., What are the near expiry items in April in Jbeil branch?" required>
-            </div>
-            <div class="col-lg-2 d-grid">
-                <button type="submit" class="btn btn-primary">Run Query</button>
-            </div>
-        </form>
-        <div id="nlpStatus" class="mt-3 text-muted small"></div>
-        <div id="nlpResults" class="mt-3"></div>
+<!-- Bottom row: recent entries + top products + NLP query -->
+<div style="display:grid;grid-template-columns:1.6fr 1fr;gap:20px;margin-bottom:20px" class="bottom-row">
+
+  <!-- Recent entries -->
+  <div class="eg-card" style="margin-bottom:0">
+    <div class="eg-card-header">
+      <span class="eg-card-title"><i class="bi bi-clock-history me-2"></i>Recent Entries</span>
+      <a href="products.php<?= $branchFilterValue ? '?branch='.urlencode($selectedBranch) : '' ?>" class="btn-eg btn-ghost-eg btn-xs-eg">View all</a>
     </div>
+    <div class="eg-table-wrap">
+      <table class="eg-table">
+        <thead><tr><th>Product</th><th>Expiry</th><th>Status</th><th>Branch</th></tr></thead>
+        <tbody>
+        <?php if (empty($recentProducts)): ?>
+          <tr><td colspan="4"><div class="empty-state"><i class="bi bi-box-seam"></i><p>No products yet.</p></div></td></tr>
+        <?php endif; ?>
+        <?php foreach ($recentProducts as $p):
+          $sc = ['active'=>'badge-active','near_expiry'=>'badge-near','expired'=>'badge-expired','removed'=>'badge-removed'];
+          $sl = ['active'=>'Active','near_expiry'=>'Near Expiry','expired'=>'Expired','removed'=>'Removed'];
+        ?>
+          <tr>
+            <td>
+              <div style="font-weight:600;font-size:.82rem"><?= htmlspecialchars($p['product_name']) ?></div>
+              <div style="font-size:.72rem;color:var(--text-muted)"><?= htmlspecialchars($p['barcode']) ?></div>
+            </td>
+            <td style="font-size:.82rem"><?= date('M j, Y', strtotime($p['expiry_date'])) ?></td>
+            <td><span class="badge-eg <?= $sc[$p['status']] ?? 'badge-removed' ?>"><?= $sl[$p['status']] ?? $p['status'] ?></span></td>
+            <td style="font-size:.78rem;color:var(--text-muted)"><?= htmlspecialchars($p['branch_name'] ?? '—') ?></td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Top products + NLP -->
+  <div style="display:flex;flex-direction:column;gap:20px">
+    <div class="eg-card" style="margin-bottom:0">
+      <div class="eg-card-header">
+        <span class="eg-card-title"><i class="bi bi-bar-chart me-2"></i>Top Products</span>
+      </div>
+      <div class="eg-card-body" style="padding-top:14px">
+        <?php if (empty($topProducts)): ?>
+          <div class="empty-state" style="padding:20px"><i class="bi bi-box-seam"></i><p>No data yet.</p></div>
+        <?php else: ?>
+          <?php foreach ($topProducts as $i => $tp): ?>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f1f5f9">
+            <div style="display:flex;align-items:center;gap:9px">
+              <div style="width:22px;height:22px;border-radius:6px;background:var(--blue-light);color:var(--blue);font-size:.7rem;font-weight:800;display:flex;align-items:center;justify-content:center"><?= $i+1 ?></div>
+              <span style="font-size:.82rem"><?= htmlspecialchars($tp['product_name']) ?></span>
+            </div>
+            <span style="font-size:.78rem;font-weight:700;color:var(--text-muted)"><?= $tp['total'] ?></span>
+          </div>
+          <?php endforeach; ?>
+        <?php endif; ?>
+      </div>
+    </div>
+
+    <?php if (in_array($myRole, ['super_admin','company_admin'], true)): ?>
+    <div class="eg-card" style="margin-bottom:0">
+      <div class="eg-card-header">
+        <span class="eg-card-title"><i class="bi bi-magic me-2"></i>AI Query</span>
+      </div>
+      <div class="eg-card-body">
+        <p style="font-size:.78rem;color:var(--text-muted);margin-bottom:12px">Ask a question in plain English about your inventory.</p>
+        <div class="form-group">
+          <input type="text" id="nlpInput" class="eg-input" placeholder="e.g. Near expiry items this week…">
+        </div>
+        <button class="btn-eg btn-primary-eg btn-sm-eg w-100 justify-content-center" onclick="runNlp()">
+          <i class="bi bi-send"></i> Run Query
+        </button>
+        <div id="nlpResult" style="margin-top:12px;font-size:.8rem"></div>
+      </div>
+    </div>
+    <?php endif; ?>
+  </div>
+
 </div>
 
-<div class="row g-3">
-    <div class="col-lg-6">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body">
-                <h5 class="mb-1 fw-semibold">Priority inventory signals</h5>
-                <p class="text-muted small mb-3">Top recurring products in operational flow</p>
-
-                <?php if (count($topProducts)): ?>
-                    <ul class="list-group list-group-flush">
-                        <?php foreach ($topProducts as $index => $row): ?>
-                            <li class="list-group-item border-0 px-0 py-3 d-flex justify-content-between">
-                                <div>
-                                    <strong><?= htmlspecialchars($row['product_name']) ?></strong>
-                                    <div class="small text-muted">Rank <?= $index + 1 ?></div>
-                                </div>
-                                <span class="badge bg-secondary text-dark rounded-pill"><?= $row['total'] ?></span>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
-                <?php else: ?>
-                    <div class="text-muted small">No product insights yet.</div>
-                <?php endif; ?>
-            </div>
-        </div>
-    </div>
-
-    <div class="col-lg-6">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body">
-                <h5 class="mb-1 fw-semibold">Branch performance</h5>
-                <p class="text-muted small mb-3">Highest activity by location</p>
-
-                <?php if ($branchColumn && count($topBranches)): ?>
-                    <div class="table-responsive">
-                        <table class="table mb-0">
-                            <thead>
-                                <tr>
-                                    <th>Branch</th>
-                                    <th class="text-end">Entries</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($topBranches as $row): ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($row['branch'] ?: 'Unknown') ?></td>
-                                        <td class="text-end"><?= $row['total'] ?></td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                <?php else: ?>
-                    <div class="text-muted small">Branch tracking not configured yet.</div>
-                <?php endif; ?>
-            </div>
-        </div>
-    </div>
-</div>
-
-<?php if ($search): ?>
-<?php
-$searchSql = "
-    SELECT barcode, product_name, expiry_date, status
-    FROM products
-    WHERE (
-        barcode LIKE CONCAT('%', ?, '%')
-        OR product_name LIKE CONCAT('%', ?, '%')
-        OR expiry_date LIKE CONCAT('%', ?, '%')
-        OR status LIKE CONCAT('%', ?, '%')
-    )
-";
-
-if ($branchColumn && $selectedBranch !== 'all') {
-    $searchSql .= " AND `$branchColumn` = ?";
-}
-
-$searchSql .= " ORDER BY entered_on DESC";
-
-$stmt = $conn->prepare($searchSql);
-
-if ($branchColumn && $selectedBranch !== 'all') {
-    $stmt->bind_param("sssss", $search, $search, $search, $search, $selectedBranch);
-} else {
-    $stmt->bind_param("ssss", $search, $search, $search, $search);
-}
-
-$stmt->execute();
-$result = $stmt->get_result();
-?>
-
-<div class="card mt-4 border-0 shadow-sm">
-    <div class="card-body">
-        <h5 class="mb-3">Search Results (<?= $result->num_rows ?>)</h5>
-
-        <div class="table-responsive">
-            <table class="table table-striped align-middle mb-0">
-                <thead>
-                    <tr>
-                        <th>Barcode</th>
-                        <th>Product</th>
-                        <th>Expiry Date</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php while ($row = $result->fetch_assoc()): ?>
-                        <tr>
-                            <td><?= htmlspecialchars($row['barcode']) ?></td>
-                            <td><?= htmlspecialchars($row['product_name']) ?></td>
-                            <td><?= htmlspecialchars($row['expiry_date']) ?></td>
-                            <td>
-                                <span class="badge bg-primary bg-opacity-10 text-primary rounded-pill">
-                                    <?= htmlspecialchars($row['status']) ?>
-                                </span>
-                            </td>
-                        </tr>
-                    <?php endwhile; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
-<?php endif; ?>
-
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
-const statusLabels = <?= json_encode(array_column($statuses, 0)) ?>;
-const statusValues = <?= json_encode(array_column($statuses, 1)) ?>;
-const trendLabels = <?= json_encode($trendLabels) ?>;
-const trendValues = <?= json_encode($trendData) ?>;
-
+// Status donut chart
+const statusData = <?= json_encode($statusRows) ?>;
+const palette = { active: '#10b981', near_expiry: '#f59e0b', expired: '#ef4444', removed: '#94a3b8' };
 new Chart(document.getElementById('statusChart'), {
-    type: 'doughnut',
-    data: {
-        labels: statusLabels,
-        datasets: [{
-            data: statusValues,
-            backgroundColor: ['#7c3aed', '#22c55e', '#f59e0b', '#ef4444'],
-            borderWidth: 0
-        }]
-    },
-    options: {
-        plugins: {
-            legend: {
-                position: 'bottom',
-                labels: { color: '#64748b' }
-            }
-        },
-        maintainAspectRatio: false
-    }
+  type: 'doughnut',
+  data: {
+    labels: statusData.map(r => r.status.replace('_',' ')),
+    datasets: [{ data: statusData.map(r => r.total), backgroundColor: statusData.map(r => palette[r.status] || '#cbd5e1'), borderWidth: 0, hoverOffset: 6 }]
+  },
+  options: {
+    cutout: '68%',
+    plugins: { legend: { position: 'bottom', labels: { color: '#64748b', padding: 12, font: { size: 11 } } } },
+    maintainAspectRatio: false
+  }
 });
 
+// Trend line chart
+const trendData = <?= json_encode($trendRows) ?>;
 new Chart(document.getElementById('trendChart'), {
-    type: 'line',
-    data: {
-        labels: trendLabels,
-        datasets: [{
-            data: trendValues,
-            borderColor: '#7c3aed',
-            backgroundColor: 'rgba(124,58,237,0.12)',
-            fill: true,
-            tension: 0.35
-        }]
+  type: 'bar',
+  data: {
+    labels: trendData.map(r => r.day),
+    datasets: [{
+      data: trendData.map(r => r.total),
+      backgroundColor: 'rgba(16,185,129,.2)',
+      borderColor: '#10b981', borderWidth: 2, borderRadius: 5
+    }]
+  },
+  options: {
+    scales: {
+      x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { display: false } },
+      y: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(148,163,184,.15)' }, beginAtZero: true }
     },
-    options: {
-        scales: {
-            x: {
-                ticks: { color: '#64748b' },
-                grid: { color: 'rgba(148,163,184,0.15)' }
-            },
-            y: {
-                ticks: { color: '#64748b' },
-                grid: { color: 'rgba(148,163,184,0.15)' },
-                beginAtZero: true
-            }
-        },
-        plugins: {
-            legend: { display: false }
-        },
-        maintainAspectRatio: false
-    }
+    plugins: { legend: { display: false } },
+    maintainAspectRatio: false
+  }
 });
 
-const nlpForm = document.getElementById('nlpQueryForm');
-const nlpStatus = document.getElementById('nlpStatus');
-const nlpResults = document.getElementById('nlpResults');
-
-nlpForm.addEventListener('submit', async function (e) {
-    e.preventDefault();
-    const query = document.getElementById('query').value.trim();
-    if (!query) {
-        return;
-    }
-
-    nlpStatus.textContent = 'Running query...';
-    nlpResults.innerHTML = '';
-
-    try {
-        const response = await fetch('../api/nlp_query.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({ query })
-        });
-
-        const text = await response.text();
-        let result;
-
-        try {
-            result = JSON.parse(text);
-        } catch (parseError) {
-            throw new Error(text || 'Invalid JSON response from server.');
-        }
-
-        if (result.error) {
-            nlpStatus.textContent = result.error;
-            nlpResults.innerHTML = '';
-            return;
-        }
-
-        nlpStatus.textContent = `SQL generated: ${result.sql}`;
-
-        if (!Array.isArray(result.data) || result.data.length === 0) {
-            nlpResults.innerHTML = '<div class="text-muted">No rows returned.</div>';
-            return;
-        }
-
-        const columns = Object.keys(result.data[0]);
-        let html = '<div class="table-responsive"><table class="table table-sm table-striped">';
-        html += '<thead><tr>' + columns.map(column => `<th>${column}</th>`).join('') + '</tr></thead>';
-        html += '<tbody>';
-
-        result.data.forEach(row => {
-            html += '<tr>' + columns.map(column => `<td>${row[column] !== null ? htmlspecialchars(row[column]) : ''}</td>`).join('') + '</tr>';
-        });
-
-        html += '</tbody></table></div>';
-        nlpResults.innerHTML = html;
-    } catch (error) {
-        nlpStatus.textContent = 'An error occurred while running the query.';
-        nlpResults.innerHTML = '';
-        console.error(error);
-    }
-});
-
-function htmlspecialchars(str) {
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
+// NLP query
+async function runNlp() {
+  const q = document.getElementById('nlpInput').value.trim();
+  if (!q) return;
+  const el = document.getElementById('nlpResult');
+  el.innerHTML = '<div style="color:var(--text-muted)"><div class="spinner-border spinner-border-sm me-1"></div> Running…</div>';
+  try {
+    const fd = new FormData(); fd.append('query', q);
+    const res  = await fetch('../api/nlp_query.php', { method: 'POST', body: fd });
+    const json = await res.json();
+    if (!json.success) { el.innerHTML = `<div style="color:var(--red)">${json.message}</div>`; return; }
+    if (!json.data?.length) { el.innerHTML = '<div style="color:var(--text-muted)">No results.</div>'; return; }
+    const cols = Object.keys(json.data[0]);
+    let h = '<div style="overflow-x:auto"><table class="eg-table" style="font-size:.76rem"><thead><tr>' + cols.map(c=>`<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+    json.data.forEach(r => { h += '<tr>' + cols.map(c=>`<td>${r[c] ?? ''}</td>`).join('') + '</tr>'; });
+    h += '</tbody></table></div>';
+    el.innerHTML = `<div style="color:var(--green);font-size:.74rem;margin-bottom:8px"><i class="bi bi-check-circle"></i> ${json.data.length} row(s)</div>` + h;
+  } catch { el.innerHTML = '<div style="color:var(--red)">Request failed.</div>'; }
 }
+document.getElementById('nlpInput')?.addEventListener('keydown', e => { if (e.key === 'Enter') runNlp(); });
 </script>
+
+<style>
+@media (max-width: 768px) {
+  .charts-row, .bottom-row { grid-template-columns: 1fr !important; }
+}
+</style>
 
 <?php include 'layout_bottom.php'; ?>

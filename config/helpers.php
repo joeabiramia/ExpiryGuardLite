@@ -1,12 +1,6 @@
 <?php
 
-/*
-|--------------------------------------------------------------------------
-| Existing JSON Response
-|--------------------------------------------------------------------------
-*/
-
-function jsonResponse($success, $message, $data = null)
+function jsonResponse($success, $message, $data = null, int $code = 200): void
 {
     while (ob_get_level() > 0) {
         ob_end_clean();
@@ -16,43 +10,37 @@ function jsonResponse($success, $message, $data = null)
         $data = new stdClass();
     }
 
+    http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
 
     echo json_encode([
         'success' => $success,
         'message' => $message,
-        'data'    => $data
+        'data'    => $data,
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
     exit();
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Existing Sanitize Function
-|--------------------------------------------------------------------------
-*/
-
-function sanitize($value)
+function sanitize($value): string
 {
     return htmlspecialchars(trim($value ?? ''), ENT_QUOTES, 'UTF-8');
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Permission System
-|--------------------------------------------------------------------------
-|
-| Priority:
-|
-| 1. super_admin => full access
-| 2. user_permissions override
-| 3. role_permissions default
-| 4. otherwise deny
-|
-*/
+function getRoleLevel(string $role): int
+{
+    $levels = [
+        'viewer'         => 1,
+        'employee'       => 2,
+        'branch_manager' => 3,
+        'company_admin'  => 4,
+        'super_admin'    => 5,
+    ];
+
+    return $levels[$role] ?? 0;
+}
 
 
 function userHasPermission(mysqli $conn, int $userId, string $permissionKey): bool
@@ -88,84 +76,46 @@ function userHasPermission(mysqli $conn, int $userId, string $permissionKey): bo
         return false;
     }
 
-    $stmt->bind_param("si", $permissionKey, $userId);
+    $stmt->bind_param('si', $permissionKey, $userId);
     $stmt->execute();
 
     $result = $stmt->get_result();
 
-    if (!$result || $result->num_rows === 0) {
+    if (!$result) {
+        $stmt->close();
+        return false;
+    }
+
+    if ($result->num_rows === 0) {
+        $result->free();
+        $stmt->close();
         return false;
     }
 
     $row = $result->fetch_assoc();
+    $result->free();
+    $stmt->close();
 
     return isset($row['is_allowed']) && (int)$row['is_allowed'] === 1;
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Hard Block Access
-|--------------------------------------------------------------------------
-|
-| Example:
-|
-| requirePermission($conn, $_SESSION['user_id'], 'manage_users');
-|
-*/
-
-
-function requirePermission(mysqli $conn, int $userId, string $permissionKey)
+function requirePermission(mysqli $conn, int $userId, string $permissionKey): void
 {
     if (!userHasPermission($conn, $userId, $permissionKey)) {
-        jsonResponse(false, 'Access denied');
+        jsonResponse(false, 'Access denied', null, 403);
     }
 }
-
-
-/*
-|--------------------------------------------------------------------------
-| Role Creation Rules
-|--------------------------------------------------------------------------
-|
-| Controls who can create which role
-|
-| super_admin -> all roles
-| company_admin -> company_admin, branch_manager, employee, viewer
-| branch_manager -> employee, viewer
-| employee -> none
-| viewer -> none
-|
-*/
 
 
 function canCreateRole(string $creatorRole, string $targetRole): bool
 {
     $rules = [
-
-        'super_admin' => [
-            'super_admin',
-            'company_admin',
-            'branch_manager',
-            'employee',
-            'viewer'
-        ],
-
-        'company_admin' => [
-            'company_admin',
-            'branch_manager',
-            'employee',
-            'viewer'
-        ],
-
-        'branch_manager' => [
-            'employee',
-            'viewer'
-        ],
-
-        'employee' => [],
-
-        'viewer' => []
+        'super_admin'    => ['super_admin', 'company_admin', 'branch_manager', 'employee', 'viewer'],
+        'company_admin'  => ['company_admin', 'branch_manager', 'employee', 'viewer'],
+        'branch_manager' => ['employee', 'viewer'],
+        'employee'       => [],
+        'viewer'         => [],
     ];
 
     if (!isset($rules[$creatorRole])) {
@@ -176,56 +126,74 @@ function canCreateRole(string $creatorRole, string $targetRole): bool
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Get Logged In User
-|--------------------------------------------------------------------------
-*/
-
-
-function getLoggedInUser(mysqli $conn, int $userId)
+function getLoggedInUser(mysqli $conn, int $userId): ?array
 {
-    $sql = "
-        SELECT
-            id,
-            full_name,
-            username,
-            role,
-            company_id,
-            branch_id,
-            is_active
+    $stmt = $conn->prepare("
+        SELECT id, full_name, username, role, company_id, branch_id, is_active, created_by
         FROM users
         WHERE id = ?
         LIMIT 1
-    ";
-
-    $stmt = $conn->prepare($sql);
+    ");
 
     if (!$stmt) {
         return null;
     }
 
-    function getRoleLevel(string $role): int
-{
-    $levels = [
-        'viewer' => 1,
-        'employee' => 2,
-        'branch_manager' => 3,
-        'company_admin' => 4,
-        'super_admin' => 5
-    ];
-
-    return $levels[$role] ?? 0;
-}
-
-    $stmt->bind_param("i", $userId);
+    $stmt->bind_param('i', $userId);
     $stmt->execute();
 
     $result = $stmt->get_result();
 
-    if (!$result || $result->num_rows === 0) {
+    if (!$result) {
+        $stmt->close();
         return null;
     }
 
-    return $result->fetch_assoc();
+    if ($result->num_rows === 0) {
+        $result->free();
+        $stmt->close();
+        return null;
+    }
+
+    $row = $result->fetch_assoc();
+    $result->free();
+    $stmt->close();
+
+    return $row;
+}
+
+
+function logActivity(
+    mysqli $conn,
+    int $companyId,
+    ?int $branchId,
+    ?int $userId,
+    string $actionType,
+    string $targetTable,
+    ?int $targetId = null,
+    ?string $description = null
+): void {
+    // Convert 0 to null — FK constraint requires a valid branch/user ID or NULL
+    $branchIdVal = ($branchId  && $branchId  > 0) ? $branchId  : null;
+    $userIdVal   = ($userId    && $userId    > 0) ? $userId    : null;
+    $targetIdVal = ($targetId  && $targetId  > 0) ? $targetId  : null;
+
+    $stmt = $conn->prepare("
+        INSERT INTO activity_logs
+            (company_id, branch_id, user_id, action_type, target_table, target_id, description)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ");
+
+    if (!$stmt) {
+        return;
+    }
+
+    $stmt->bind_param('iiissis', $companyId, $branchIdVal, $userIdVal, $actionType, $targetTable, $targetIdVal, $description);
+
+    if (!$stmt->execute()) {
+        // Log failure silently — don't break the main operation
+        error_log('[logActivity] Failed: ' . $stmt->error);
+    }
+
+    $stmt->close();
 }

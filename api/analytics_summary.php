@@ -1,84 +1,38 @@
 <?php
-require_once '../config/db.php';
 require_once '../config/helpers.php';
+require_once '../config/db.php';
+require_once '../config/api_auth.php';
 
-if (!function_exists('apiResponse')) {
-    function apiResponse($success, $message, $data = null, $code = 200) {
-        http_response_code($code);
-        header('Content-Type: application/json');
-        echo json_encode([
-            'success' => $success,
-            'message' => $message,
-            'data' => $data
-        ]);
-        exit;
-    }
-}
-
-function requireAdminAccess(mysqli $conn, int $adminUserId): array {
-    if ($adminUserId <= 0) {
-        apiResponse(false, 'admin_user_id is required', null, 400);
-    }
-
-    $stmt = $conn->prepare("
-        SELECT id, role, company_id, branch_id, is_active
-        FROM users
-        WHERE id = ?
-        LIMIT 1
-    ");
-    $stmt->bind_param('i', $adminUserId);
-    $stmt->execute();
-    $user = $stmt->get_result()->fetch_assoc();
-
-    if (!$user) {
-        apiResponse(false, 'Admin user not found', null, 404);
-    }
-
-    if ((int)$user['is_active'] !== 1) {
-        apiResponse(false, 'Admin user is inactive', null, 403);
-    }
-
-    $allowedRoles = ['super_admin', 'company_admin', 'branch_manager'];
-    if (!in_array($user['role'], $allowedRoles, true)) {
-        apiResponse(false, 'Access denied', null, 403);
-    }
-
-    return $user;
-}
+addSecurityHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-    apiResponse(false, 'Invalid request method', null, 405);
+    jsonResponse(false, 'Invalid request method', null, 405);
 }
 
-$adminUserId = (int)($_GET['admin_user_id'] ?? 0);
-$admin = requireAdminAccess($conn, $adminUserId);
+$admin = resolveAdminApiUser($conn);
 
-$companyId = (int)($_GET['company_id'] ?? 0);
-$branchId = (int)($_GET['branch_id'] ?? 0);
+$companyId = (int)$admin['company_id'];
+$branchId  = (int)($_GET['branch_id'] ?? 0);
 
-if ($admin['role'] === 'company_admin' || $admin['role'] === 'branch_manager') {
+if (in_array($admin['role'], ['company_admin', 'branch_manager'], true)) {
     $companyId = (int)$admin['company_id'];
 }
 if ($admin['role'] === 'branch_manager') {
     $branchId = (int)$admin['branch_id'];
 }
 
-$where = " WHERE 1 = 1 ";
-$params = [];
-$types = '';
+$where  = ' WHERE company_id = ?';
+$params = [$companyId];
+$types  = 'i';
 
-if ($companyId > 0) {
-    $where .= " AND company_id = ? ";
-    $types .= 'i';
-    $params[] = $companyId;
-}
 if ($branchId > 0) {
-    $where .= " AND branch_id = ? ";
-    $types .= 'i';
+    $where  .= ' AND branch_id = ?';
+    $types  .= 'i';
     $params[] = $branchId;
 }
 
-function fetchCount(mysqli $conn, string $sql, string $types = '', array $params = []): int {
+function analyticsCount(mysqli $conn, string $sql, string $types, array $params): int
+{
     $stmt = $conn->prepare($sql);
     if ($types !== '') {
         $stmt->bind_param($types, ...$params);
@@ -88,121 +42,70 @@ function fetchCount(mysqli $conn, string $sql, string $types = '', array $params
     return (int)($row['total'] ?? 0);
 }
 
-$totalProducts = fetchCount($conn, "SELECT COUNT(*) AS total FROM products $where", $types, $params);
-$activeProducts = fetchCount($conn, "SELECT COUNT(*) AS total FROM products $where AND status = 'active' AND is_removed = 0", $types, $params);
-$nearExpiry = fetchCount($conn, "SELECT COUNT(*) AS total FROM products $where AND status = 'near_expiry' AND is_removed = 0", $types, $params);
-$expired = fetchCount($conn, "SELECT COUNT(*) AS total FROM products $where AND status = 'expired' AND is_removed = 0", $types, $params);
-$removed = fetchCount($conn, "SELECT COUNT(*) AS total FROM products $where AND (status = 'removed' OR is_removed = 1)", $types, $params);
+$base = "SELECT COUNT(*) AS total FROM products $where";
 
-$userWhere = " WHERE 1 = 1 ";
-$userParams = [];
-$userTypes = '';
+$totalProducts  = analyticsCount($conn, $base, $types, $params);
+$activeProducts = analyticsCount($conn, "$base AND status = 'active' AND is_removed = 0", $types, $params);
+$nearExpiry     = analyticsCount($conn, "$base AND status = 'near_expiry' AND is_removed = 0", $types, $params);
+$expired        = analyticsCount($conn, "$base AND status = 'expired' AND is_removed = 0", $types, $params);
+$removed        = analyticsCount($conn, "$base AND (status = 'removed' OR is_removed = 1)", $types, $params);
 
-if ($companyId > 0) {
-    $userWhere .= " AND company_id = ? ";
-    $userTypes .= 'i';
-    $userParams[] = $companyId;
-}
+$userWhere  = ' WHERE company_id = ?';
+$userParams = [$companyId];
+$userTypes  = 'i';
 if ($branchId > 0) {
-    $userWhere .= " AND (branch_id = ? OR branch_id IS NULL) ";
-    $userTypes .= 'i';
+    $userWhere  .= ' AND (branch_id = ? OR branch_id IS NULL)';
+    $userTypes  .= 'i';
     $userParams[] = $branchId;
 }
+$totalUsers = analyticsCount($conn, "SELECT COUNT(*) AS total FROM users $userWhere", $userTypes, $userParams);
 
-$totalUsers = fetchCount($conn, "SELECT COUNT(*) AS total FROM users $userWhere", $userTypes, $userParams);
-
-$statusSql = "
-    SELECT status, COUNT(*) AS total
-    FROM products
-    $where AND is_removed = 0
-    GROUP BY status
-    ORDER BY total DESC
-";
-$stmt = $conn->prepare($statusSql);
-if ($types !== '') {
-    $stmt->bind_param($types, ...$params);
-}
-$stmt->execute();
-$statusRows = $stmt->get_result();
-
+// Status distribution chart
+$statusStmt = $conn->prepare("SELECT status, COUNT(*) AS total FROM products $where AND is_removed = 0 GROUP BY status ORDER BY total DESC");
+$statusStmt->bind_param($types, ...$params);
+$statusStmt->execute();
 $statusChart = [];
-while ($row = $statusRows->fetch_assoc()) {
-    $statusChart[] = [
-        'label' => $row['status'],
-        'value' => (int)$row['total']
-    ];
+while ($row = $statusStmt->get_result()->fetch_assoc()) {
+    $statusChart[] = ['label' => $row['status'], 'value' => (int)$row['total']];
 }
 
-$branchChartSql = "
-    SELECT b.branch_name, COUNT(p.id) AS total
-    FROM products p
-    INNER JOIN branches b ON p.branch_id = b.id
-    WHERE 1 = 1
-";
-
-$branchChartParams = [];
-$branchChartTypes = '';
-
-if ($companyId > 0) {
-    $branchChartSql .= " AND p.company_id = ? ";
-    $branchChartTypes .= 'i';
-    $branchChartParams[] = $companyId;
-}
+// Branch distribution
+$branchSql    = "SELECT b.branch_name, COUNT(p.id) AS total FROM products p INNER JOIN branches b ON p.branch_id = b.id WHERE p.company_id = ?";
+$branchParams = [$companyId];
+$branchTypes  = 'i';
 if ($branchId > 0) {
-    $branchChartSql .= " AND p.branch_id = ? ";
-    $branchChartTypes .= 'i';
-    $branchChartParams[] = $branchId;
+    $branchSql    .= ' AND p.branch_id = ?';
+    $branchTypes  .= 'i';
+    $branchParams[] = $branchId;
 }
-
-$branchChartSql .= " GROUP BY b.id, b.branch_name ORDER BY total DESC";
-
-$stmt = $conn->prepare($branchChartSql);
-if ($branchChartTypes !== '') {
-    $stmt->bind_param($branchChartTypes, ...$branchChartParams);
-}
-$stmt->execute();
-$branchRows = $stmt->get_result();
-
+$branchSql .= ' GROUP BY b.id, b.branch_name ORDER BY total DESC';
+$branchStmt = $conn->prepare($branchSql);
+$branchStmt->bind_param($branchTypes, ...$branchParams);
+$branchStmt->execute();
 $branchChart = [];
-while ($row = $branchRows->fetch_assoc()) {
-    $branchChart[] = [
-        'label' => $row['branch_name'],
-        'value' => (int)$row['total']
-    ];
+while ($row = $branchStmt->get_result()->fetch_assoc()) {
+    $branchChart[] = ['label' => $row['branch_name'], 'value' => (int)$row['total']];
 }
 
-$monthlyRemovedSql = "
-    SELECT DATE_FORMAT(removed_on, '%Y-%m') AS month_label, COUNT(*) AS total
-    FROM products
-    $where AND removed_on IS NOT NULL
-    GROUP BY DATE_FORMAT(removed_on, '%Y-%m')
-    ORDER BY month_label ASC
-";
-$stmt = $conn->prepare($monthlyRemovedSql);
-if ($types !== '') {
-    $stmt->bind_param($types, ...$params);
-}
-$stmt->execute();
-$removedRows = $stmt->get_result();
-
+// Monthly removed
+$monthStmt = $conn->prepare("SELECT DATE_FORMAT(removed_on, '%Y-%m') AS month_label, COUNT(*) AS total FROM products $where AND removed_on IS NOT NULL GROUP BY DATE_FORMAT(removed_on, '%Y-%m') ORDER BY month_label ASC");
+$monthStmt->bind_param($types, ...$params);
+$monthStmt->execute();
 $removedChart = [];
-while ($row = $removedRows->fetch_assoc()) {
-    $removedChart[] = [
-        'label' => $row['month_label'],
-        'value' => (int)$row['total']
-    ];
+while ($row = $monthStmt->get_result()->fetch_assoc()) {
+    $removedChart[] = ['label' => $row['month_label'], 'value' => (int)$row['total']];
 }
 
-apiResponse(true, 'Analytics loaded successfully', [
-    'total_products' => $totalProducts,
+jsonResponse(true, 'Analytics loaded successfully', [
+    'total_products'  => $totalProducts,
     'active_products' => $activeProducts,
-    'near_expiry' => $nearExpiry,
-    'expired' => $expired,
-    'removed' => $removed,
-    'total_users' => $totalUsers,
-    'chart_data' => [
+    'near_expiry'     => $nearExpiry,
+    'expired'         => $expired,
+    'removed'         => $removed,
+    'total_users'     => $totalUsers,
+    'chart_data'      => [
         'status_distribution' => $statusChart,
         'branch_distribution' => $branchChart,
-        'monthly_removed' => $removedChart
-    ]
+        'monthly_removed'     => $removedChart,
+    ],
 ]);

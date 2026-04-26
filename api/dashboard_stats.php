@@ -1,34 +1,46 @@
 <?php
-require_once '../config/db.php';
 require_once '../config/helpers.php';
+require_once '../config/db.php';
+require_once '../config/api_auth.php';
 
-$stats = [
-    'total_products' => 0,
-    'active_products' => 0,
-    'near_expiry' => 0,
-    'expired' => 0,
-    'removed' => 0,
-    'total_users' => 0,
-    'admins' => 0,
-    'employees' => 0
-];
+addSecurityHeaders();
 
-$queries = [
-    'total_products' => "SELECT COUNT(*) AS total FROM products",
-    'active_products' => "SELECT COUNT(*) AS total FROM products WHERE status = 'active' AND is_removed = 0",
-    'near_expiry' => "SELECT COUNT(*) AS total FROM products WHERE status = 'near_expiry' AND is_removed = 0",
-    'expired' => "SELECT COUNT(*) AS total FROM products WHERE status = 'expired' AND is_removed = 0",
-    'removed' => "SELECT COUNT(*) AS total FROM products WHERE status = 'removed' OR is_removed = 1",
-    'total_users' => "SELECT COUNT(*) AS total FROM users",
-    'admins' => "SELECT COUNT(*) AS total FROM users WHERE role = 'admin'",
-    'employees' => "SELECT COUNT(*) AS total FROM users WHERE role = 'employee'"
-];
+$apiUser = resolveApiUser($conn);
 
-foreach ($queries as $key => $sql) {
-    $result = $conn->query($sql);
-    $row = $result->fetch_assoc();
-    $stats[$key] = (int)$row['total'];
+$company_id = (int)$apiUser['company_id'];
+$branch_id  = (int)$apiUser['branch_id'];
+
+// Build scoped WHERE clause
+$where  = 'WHERE company_id = ?';
+$params = [$company_id];
+$types  = 'i';
+
+if (!in_array($apiUser['role'], ['super_admin', 'company_admin'], true) && $branch_id > 0) {
+    $where  .= ' AND branch_id = ?';
+    $types  .= 'i';
+    $params[] = $branch_id;
 }
 
-jsonResponse(true, 'Dashboard stats fetched successfully', $stats);
+function runCount(mysqli $conn, string $sql, string $types, array $params): int
+{
+    $stmt = $conn->prepare($sql);
+    if ($types !== '') {
+        $stmt->bind_param($types, ...$params);
+    }
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    return (int)($row['total'] ?? 0);
+}
 
+$base = "SELECT COUNT(*) AS total FROM products $where";
+
+$stats = [
+    'total_products'  => runCount($conn, $base, $types, $params),
+    'active_products' => runCount($conn, "$base AND status = 'active' AND is_removed = 0", $types, $params),
+    'near_expiry'     => runCount($conn, "$base AND status = 'near_expiry' AND is_removed = 0", $types, $params),
+    'expired'         => runCount($conn, "$base AND status = 'expired' AND is_removed = 0", $types, $params),
+    'removed'         => runCount($conn, "$base AND (status = 'removed' OR is_removed = 1)", $types, $params),
+    'total_users'     => runCount($conn, "SELECT COUNT(*) AS total FROM users WHERE company_id = ?", 'i', [$company_id]),
+];
+
+jsonResponse(true, 'Dashboard stats fetched successfully', $stats);

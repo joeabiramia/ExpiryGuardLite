@@ -1,335 +1,150 @@
 <?php
-session_start();
-
-require_once '../config/db.php';
 require_once '../config/helpers.php';
+require_once '../config/db.php';
+require_once '../config/api_auth.php';
 
-/*
-|--------------------------------------------------------------------------
-| Only POST allowed
-|--------------------------------------------------------------------------
-*/
+addSecurityHeaders();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    jsonResponse(false, 'Invalid request method');
+    jsonResponse(false, 'Invalid request method', null, 405);
 }
 
-/*
-|--------------------------------------------------------------------------
-| Session check
-|--------------------------------------------------------------------------
-*/
+if (session_status() === PHP_SESSION_NONE) session_start();
 
-if (!isset($_SESSION['user_id'])) {
-    jsonResponse(false, 'Session expired. Please login again.');
+$loggedInUserId = isset($_SESSION['user_id'])
+    ? (int)$_SESSION['user_id']
+    : (int)($_POST['admin_user_id'] ?? 0);
+
+if ($loggedInUserId <= 0) {
+    jsonResponse(false, 'Authentication required', null, 401);
 }
-
-$loggedInUserId = (int) $_SESSION['user_id'];
-
-/*
-|--------------------------------------------------------------------------
-| Permission check
-|--------------------------------------------------------------------------
-|
-| Only users with manage_users can update users
-|
-*/
 
 requirePermission($conn, $loggedInUserId, 'manage_users');
 
-/*
-|--------------------------------------------------------------------------
-| Logged-in user info
-|--------------------------------------------------------------------------
-*/
-
 $me = getLoggedInUser($conn, $loggedInUserId);
-
 if (!$me) {
-    jsonResponse(false, 'Logged-in user not found');
+    jsonResponse(false, 'Logged-in user not found', null, 401);
 }
 
 $myRole      = $me['role'];
-$myCompanyId = (int) ($me['company_id'] ?? 0);
-$myBranchId  = (int) ($me['branch_id'] ?? 0);
+$myCompanyId = (int)($me['company_id'] ?? 0);
+$myBranchId  = (int)($me['branch_id']  ?? 0);
 $myLevel     = getRoleLevel($myRole);
 
-/*
-|--------------------------------------------------------------------------
-| Incoming data
-|--------------------------------------------------------------------------
-*/
-
-$id         = (int) ($_POST['id'] ?? 0);
-$full_name  = trim($_POST['full_name'] ?? '');
-$username   = trim($_POST['username'] ?? '');
+$id         = (int)($_POST['id']        ?? 0);
+$full_name  = trim($_POST['full_name']  ?? '');
+$username   = trim($_POST['username']   ?? '');
 $password   = $_POST['password'] ?? '';
-$role       = trim($_POST['role'] ?? 'employee');
-$is_active = (isset($_POST['is_active']) && $_POST['is_active'] == '1') ? 1 : 0;
-
-$company_id = isset($_POST['company_id']) ? (int) $_POST['company_id'] : 0;
-$branch_id  = isset($_POST['branch_id']) ? (int) $_POST['branch_id'] : 0;
-
-/*
-|--------------------------------------------------------------------------
-| Basic validation
-|--------------------------------------------------------------------------
-*/
+$role       = trim($_POST['role']       ?? 'employee');
+$email      = trim($_POST['email']      ?? '');
+$phone      = trim($_POST['phone']      ?? '');
+$is_active  = ((int)($_POST['is_active'] ?? 1) === 1) ? 1 : 0;
+$company_id = (int)($_POST['company_id'] ?? 0);
+$branch_id  = (int)($_POST['branch_id']  ?? 0);
 
 if ($id <= 0 || $full_name === '' || $username === '') {
-    jsonResponse(false, 'ID, full name and username are required');
+    jsonResponse(false, 'ID, full name, and username are required', null, 400);
 }
 
-$allowedRoles = [
-    'super_admin',
-    'company_admin',
-    'branch_manager',
-    'employee',
-    'viewer'
-];
-
-if (!in_array($role, $allowedRoles)) {
-    jsonResponse(false, 'Invalid role selected');
+$allowedRoles = ['super_admin', 'company_admin', 'branch_manager', 'employee', 'viewer'];
+if (!in_array($role, $allowedRoles, true)) {
+    jsonResponse(false, 'Invalid role', null, 400);
 }
-
-/*
-|--------------------------------------------------------------------------
-| Cannot edit yourself role dangerously
-|--------------------------------------------------------------------------
-|
-| Optional: allow editing profile later separately
-|
-*/
 
 if ($id === $loggedInUserId && $role !== $myRole) {
-    jsonResponse(false, 'You cannot change your own role');
+    jsonResponse(false, 'You cannot change your own role', null, 400);
 }
 
-/*
-|--------------------------------------------------------------------------
-| Get target user
-|--------------------------------------------------------------------------
-*/
+// Fetch target user — close statement immediately after
+$tStmt = $conn->prepare("SELECT id, role, company_id, branch_id, created_by FROM users WHERE id = ? LIMIT 1");
+$tStmt->bind_param('i', $id);
+$tStmt->execute();
+$tRes   = $tStmt->get_result();
+$target = $tRes->fetch_assoc();
+$tRes->free();
+$tStmt->close();
 
-$stmt = $conn->prepare("
-    SELECT
-        id,
-        role,
-        company_id,
-        branch_id
-    FROM users
-    WHERE id = ?
-    LIMIT 1
-");
-
-$stmt->bind_param("i", $id);
-$stmt->execute();
-
-$result = $stmt->get_result();
-
-if ($result->num_rows === 0) {
-    jsonResponse(false, 'Target user not found');
+if (!$target) {
+    jsonResponse(false, 'Target user not found', null, 404);
 }
 
-$target = $result->fetch_assoc();
-
-$targetLevel = getRoleLevel($target['role']);
-
-/*
-|--------------------------------------------------------------------------
-| Role hierarchy protection
-|--------------------------------------------------------------------------
-|
-| Cannot edit same or higher role users
-|
-*/
-
-if ($targetLevel >= $myLevel && $id !== $loggedInUserId) {
-    jsonResponse(false, 'You cannot edit this user');
-}
-
-/*
-|--------------------------------------------------------------------------
-| New role escalation protection
-|--------------------------------------------------------------------------
-|
-| Cannot promote someone above your own level
-|
-*/
-
+$targetLevel  = getRoleLevel($target['role']);
 $newRoleLevel = getRoleLevel($role);
 
+if ($targetLevel >= $myLevel && $id !== $loggedInUserId) {
+    jsonResponse(false, 'You cannot edit a user of equal or higher rank', null, 403);
+}
 if ($newRoleLevel >= $myLevel && $myRole !== 'super_admin') {
-    jsonResponse(false, 'You cannot assign this role');
+    jsonResponse(false, 'You cannot assign this role', null, 403);
 }
-
-/*
-|--------------------------------------------------------------------------
-| Role creation restrictions
-|--------------------------------------------------------------------------
-*/
-
 if (!canCreateRole($myRole, $role) && $role !== $target['role']) {
-    jsonResponse(false, 'You are not allowed to assign this role');
+    jsonResponse(false, 'You are not allowed to assign this role', null, 403);
 }
-
-/*
-|--------------------------------------------------------------------------
-| Company scope protection
-|--------------------------------------------------------------------------
-*/
-
-if ($myRole !== 'super_admin') {
-    if ($company_id !== $myCompanyId) {
-        jsonResponse(false, 'You cannot move users outside your company');
-    }
+if ($myRole !== 'super_admin' && $company_id !== $myCompanyId) {
+    jsonResponse(false, 'You cannot move users outside your company', null, 403);
 }
-
-/*
-|--------------------------------------------------------------------------
-| Branch Manager restriction
-|--------------------------------------------------------------------------
-*/
-
 if ($myRole === 'branch_manager') {
     if ($branch_id !== $myBranchId) {
-        jsonResponse(false, 'You can only manage users inside your branch');
+        jsonResponse(false, 'You can only manage users in your branch', null, 403);
+    }
+    if ((int)$target['created_by'] !== $loggedInUserId && $id !== $loggedInUserId) {
+        jsonResponse(false, 'You can only edit users you created', null, 403);
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Role target validation
-|--------------------------------------------------------------------------
-*/
-
-if ($role === 'super_admin') {
-    if ($company_id <= 0) {
-        jsonResponse(false, 'Company is required for Super Admin');
-    }
-
-    if ($branch_id <= 0) {
-        $branch_id = null;
-    }
+// Nullable branch for roles that don't require one
+if (in_array($role, ['super_admin', 'company_admin', 'viewer'], true) && $branch_id <= 0) {
+    $branch_id = null;
+}
+if (in_array($role, ['branch_manager', 'employee'], true) && $branch_id <= 0) {
+    jsonResponse(false, 'Branch is required for this role', null, 400);
 }
 
-if ($role === 'company_admin') {
-    if ($company_id <= 0) {
-        jsonResponse(false, 'Company is required for Company Admin');
-    }
+// Username duplicate check — close statement before running UPDATE
+$chkStmt = $conn->prepare("SELECT id FROM users WHERE username = ? AND id != ? LIMIT 1");
+$chkStmt->bind_param('si', $username, $id);
+$chkStmt->execute();
+$chkRes   = $chkStmt->get_result();
+$chkCount = $chkRes->num_rows;
+$chkRes->free();
+$chkStmt->close();
 
-    if ($branch_id <= 0) {
-        $branch_id = null;
-    }
+if ($chkCount > 0) {
+    jsonResponse(false, 'Username already taken by another account', null, 409);
 }
 
-if (in_array($role, ['branch_manager', 'employee'])) {
-    if ($company_id <= 0) {
-        jsonResponse(false, 'Company is required');
-    }
-
-    if ($branch_id <= 0) {
-        jsonResponse(false, 'Branch is required');
-    }
-}
-
-if ($role === 'viewer') {
-    if ($company_id <= 0) {
-        jsonResponse(false, 'Company is required for Viewer');
-    }
-
-    if ($branch_id <= 0) {
-        $branch_id = null;
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| Username duplicate check
-|--------------------------------------------------------------------------
-*/
-
-$checkStmt = $conn->prepare("
-    SELECT id
-    FROM users
-    WHERE username = ?
-      AND id != ?
-    LIMIT 1
-");
-
-$checkStmt->bind_param("si", $username, $id);
-$checkStmt->execute();
-
-$checkResult = $checkStmt->get_result();
-
-if ($checkResult->num_rows > 0) {
-    jsonResponse(false, 'Username already used by another account');
-}
-
-/*
-|--------------------------------------------------------------------------
-| Update user
-|--------------------------------------------------------------------------
-*/
-
+// Run UPDATE
 if ($password !== '') {
     $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
-
-    $update = $conn->prepare("
+    $upd = $conn->prepare("
         UPDATE users
-        SET
-            full_name = ?,
-            username = ?,
-            password = ?,
-            role = ?,
-            company_id = ?,
-            branch_id = ?,
-            is_active = ?
-        WHERE id = ?
+        SET full_name=?, username=?, password=?, role=?,
+            email=?, phone=?, company_id=?, branch_id=?, is_active=?
+        WHERE id=?
     ");
-
-    $update->bind_param(
-        "ssssiiii",
-        $full_name,
-        $username,
-        $hashedPassword,
-        $role,
-        $company_id,
-        $branch_id,
-        $is_active,
-        $id
-    );
-
+    // 6 strings + 4 integers = ssssssiiii
+    $upd->bind_param('ssssssiiii',
+        $full_name, $username, $hashedPassword, $role,
+        $email, $phone, $company_id, $branch_id, $is_active, $id);
 } else {
-
-    $update = $conn->prepare("
+    $upd = $conn->prepare("
         UPDATE users
-        SET
-            full_name = ?,
-            username = ?,
-            role = ?,
-            company_id = ?,
-            branch_id = ?,
-            is_active = ?
-        WHERE id = ?
+        SET full_name=?, username=?, role=?,
+            email=?, phone=?, company_id=?, branch_id=?, is_active=?
+        WHERE id=?
     ");
-
-    $update->bind_param(
-        "sssiiii",
-        $full_name,
-        $username,
-        $role,
-        $company_id,
-        $branch_id,
-        $is_active,
-        $id
-    );
+    // 5 strings + 4 integers = sssssiiii
+    $upd->bind_param('sssssiiii',
+        $full_name, $username, $role,
+        $email, $phone, $company_id, $branch_id, $is_active, $id);
 }
 
-if (!$update->execute()) {
-    header("Location: ../admin/users.php?error=user_update_failed");
-    exit;
+if (!$upd->execute()) {
+    jsonResponse(false, 'Failed to update user', null, 500);
 }
+$upd->close();
 
-header("Location: ../admin/users.php?success=user_updated");
-exit;
+logActivity($conn, $myCompanyId, $myBranchId, $loggedInUserId,
+    'update_user', 'users', $id, "Updated user: $username");
+
+jsonResponse(true, 'User updated successfully');
