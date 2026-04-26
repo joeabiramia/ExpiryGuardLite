@@ -74,9 +74,15 @@ function resolveApiUser(mysqli $conn): array
         }
     }
 
-    // 3. Legacy admin_user_id param (backward compat for current mobile app — Phase 5 removes this)
+    // 3. Legacy param fallbacks (backward compat for mobile app before token auth is deployed)
     if ($userId === 0) {
-        $legacyId = (int)($_GET['admin_user_id'] ?? $_POST['admin_user_id'] ?? 0);
+        $legacyId = (int)(
+            $_GET['admin_user_id']  ??
+            $_POST['admin_user_id'] ??
+            $_POST['entered_by']    ??  // save_product.php mobile call
+            $_POST['removed_by']    ??  // mark_removed.php mobile call
+            0
+        );
         if ($legacyId > 0) {
             $userId = $legacyId;
         }
