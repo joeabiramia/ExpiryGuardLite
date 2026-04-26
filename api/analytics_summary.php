@@ -38,7 +38,10 @@ function analyticsCount(mysqli $conn, string $sql, string $types, array $params)
         $stmt->bind_param($types, ...$params);
     }
     $stmt->execute();
-    $row = $stmt->get_result()->fetch_assoc();
+    $res   = $stmt->get_result();
+    $row   = $res->fetch_assoc();
+    $res->free();
+    $stmt->close();
     return (int)($row['total'] ?? 0);
 }
 
@@ -64,10 +67,13 @@ $totalUsers = analyticsCount($conn, "SELECT COUNT(*) AS total FROM users $userWh
 $statusStmt = $conn->prepare("SELECT status, COUNT(*) AS total FROM products $where AND is_removed = 0 GROUP BY status ORDER BY total DESC");
 $statusStmt->bind_param($types, ...$params);
 $statusStmt->execute();
+$statusRes   = $statusStmt->get_result();
 $statusChart = [];
-while ($row = $statusStmt->get_result()->fetch_assoc()) {
+while ($row = $statusRes->fetch_assoc()) {
     $statusChart[] = ['label' => $row['status'], 'value' => (int)$row['total']];
 }
+$statusRes->free();
+$statusStmt->close();
 
 // Branch distribution
 $branchSql    = "SELECT b.branch_name, COUNT(p.id) AS total FROM products p INNER JOIN branches b ON p.branch_id = b.id WHERE p.company_id = ?";
@@ -82,19 +88,25 @@ $branchSql .= ' GROUP BY b.id, b.branch_name ORDER BY total DESC';
 $branchStmt = $conn->prepare($branchSql);
 $branchStmt->bind_param($branchTypes, ...$branchParams);
 $branchStmt->execute();
+$branchRes   = $branchStmt->get_result();
 $branchChart = [];
-while ($row = $branchStmt->get_result()->fetch_assoc()) {
+while ($row = $branchRes->fetch_assoc()) {
     $branchChart[] = ['label' => $row['branch_name'], 'value' => (int)$row['total']];
 }
+$branchRes->free();
+$branchStmt->close();
 
 // Monthly removed
 $monthStmt = $conn->prepare("SELECT DATE_FORMAT(removed_on, '%Y-%m') AS month_label, COUNT(*) AS total FROM products $where AND removed_on IS NOT NULL GROUP BY DATE_FORMAT(removed_on, '%Y-%m') ORDER BY month_label ASC");
 $monthStmt->bind_param($types, ...$params);
 $monthStmt->execute();
+$monthRes     = $monthStmt->get_result();
 $removedChart = [];
-while ($row = $monthStmt->get_result()->fetch_assoc()) {
+while ($row = $monthRes->fetch_assoc()) {
     $removedChart[] = ['label' => $row['month_label'], 'value' => (int)$row['total']];
 }
+$monthRes->free();
+$monthStmt->close();
 
 jsonResponse(true, 'Analytics loaded successfully', [
     'total_products'  => $totalProducts,

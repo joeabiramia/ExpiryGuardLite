@@ -28,7 +28,10 @@ function runCount(mysqli $conn, string $sql, string $types, array $params): int
         $stmt->bind_param($types, ...$params);
     }
     $stmt->execute();
-    $row = $stmt->get_result()->fetch_assoc();
+    $res   = $stmt->get_result();
+    $row   = $res->fetch_assoc();
+    $res->free();
+    $stmt->close();
     return (int)($row['total'] ?? 0);
 }
 

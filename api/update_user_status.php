@@ -24,7 +24,10 @@ if (!in_array($isActive, [0, 1], true)) {
 $stmt = $conn->prepare("SELECT id, company_id, branch_id, role, created_by FROM users WHERE id = ? LIMIT 1");
 $stmt->bind_param('i', $targetUserId);
 $stmt->execute();
-$targetUser = $stmt->get_result()->fetch_assoc();
+$tRes       = $stmt->get_result();
+$targetUser = $tRes->fetch_assoc();
+$tRes->free();
+$stmt->close();
 
 if (!$targetUser) {
     jsonResponse(false, 'Target user not found', null, 404);

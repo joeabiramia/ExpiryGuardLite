@@ -32,7 +32,10 @@ $stmt = $conn->prepare("
 ");
 $stmt->bind_param('s', $username);
 $stmt->execute();
-$user = $stmt->get_result()->fetch_assoc();
+$loginRes = $stmt->get_result();
+$user     = $loginRes->fetch_assoc();
+$loginRes->free();
+$stmt->close();
 
 if (!$user) {
     jsonResponse(false, 'Invalid credentials', null, 401);

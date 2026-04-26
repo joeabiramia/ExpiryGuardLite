@@ -28,9 +28,12 @@ if ($admin['role'] === 'super_admin') {
     $stmt->execute();
 }
 
-$data = [];
-while ($row = $stmt->get_result()->fetch_assoc()) {
+$result = $stmt->get_result();
+$data   = [];
+while ($row = $result->fetch_assoc()) {
     $data[] = $row;
 }
+$result->free();
+$stmt->close();
 
 jsonResponse(true, 'Companies loaded successfully', $data);

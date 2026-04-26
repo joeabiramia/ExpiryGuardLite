@@ -30,7 +30,10 @@ $pStmt = $conn->prepare("
 ");
 $pStmt->bind_param('i', $product_id);
 $pStmt->execute();
-$product = $pStmt->get_result()->fetch_assoc();
+$pRes    = $pStmt->get_result();
+$product = $pRes->fetch_assoc();
+$pRes->free();
+$pStmt->close();
 
 if (!$product) {
     jsonResponse(false, 'Product not found', null, 404);

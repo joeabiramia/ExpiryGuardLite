@@ -61,7 +61,11 @@ $check = $conn->prepare("
 ");
 $check->bind_param('iss', $branch_id, $barcode, $expiry_date);
 $check->execute();
-if ($check->get_result()->fetch_assoc()) {
+$checkRes    = $check->get_result();
+$checkExists = $checkRes->fetch_assoc();
+$checkRes->free();
+$check->close();
+if ($checkExists) {
     jsonResponse(false, 'This product batch already exists in this branch');
 }
 
@@ -73,8 +77,11 @@ $ruleStmt = $conn->prepare("
 ");
 $ruleStmt->bind_param('s', $category);
 $ruleStmt->execute();
-$rule       = $ruleStmt->get_result()->fetch_assoc();
-$alertDays  = $rule ? (int)$rule['alert_days_before'] : 4;
+$ruleRes   = $ruleStmt->get_result();
+$rule      = $ruleRes->fetch_assoc();
+$alertDays = $rule ? (int)$rule['alert_days_before'] : 4;
+$ruleRes->free();
+$ruleStmt->close();
 
 if ($daysLeft < 0) {
     $status = 'expired';
