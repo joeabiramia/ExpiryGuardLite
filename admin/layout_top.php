@@ -4,6 +4,13 @@ require_once '../config/helpers.php';
 require_once '../config/db.php';
 requireLogin();
 
+// Refresh product statuses every 10 hours per session
+$_lastRefresh = (int)($_SESSION['last_status_refresh'] ?? 0);
+if (time() - $_lastRefresh > 36000) {
+    refreshProductStatuses($conn, (int)($_SESSION['company_id'] ?? 1));
+    $_SESSION['last_status_refresh'] = time();
+}
+
 $currentPage  = basename($_SERVER['PHP_SELF']);
 $userRole     = $_SESSION['role']      ?? 'viewer';
 $userName     = htmlspecialchars($_SESSION['full_name'] ?? 'User');
@@ -54,12 +61,14 @@ $nStmt->close();
 
 // Nav items (role-aware visibility)
 $navItems = [
-    ['file' => 'dashboard.php',     'label' => 'Dashboard',      'icon' => 'bi-speedometer2', 'roles' => []],
-    ['file' => 'products.php',      'label' => 'Products',        'icon' => 'bi-box-seam',      'roles' => []],
-    ['file' => 'notifications.php', 'label' => 'Alerts',          'icon' => 'bi-bell',          'roles' => [], 'badge' => $notifCount],
+    ['file' => 'dashboard.php',     'label' => 'Dashboard',        'icon' => 'bi-speedometer2',  'roles' => []],
+    ['file' => 'products.php',      'label' => 'Products',         'icon' => 'bi-box-seam',       'roles' => []],
+    ['file' => 'notifications.php', 'label' => 'Alerts',           'icon' => 'bi-bell',           'roles' => [], 'badge' => $notifCount],
     ['file' => 'removed.php',       'label' => 'Removed',         'icon' => 'bi-trash3',        'roles' => []],
     ['file' => 'category_rules.php','label' => 'Category Rules',  'icon' => 'bi-tags',          'roles' => ['super_admin','company_admin','branch_manager']],
     ['file' => 'analytics.php',     'label' => 'Analytics',       'icon' => 'bi-bar-chart-line','roles' => []],
+    ['file' => 'catalog.php',       'label' => 'Product Catalog', 'icon' => 'bi-upc-scan',      'roles' => ['super_admin','company_admin','branch_manager']],
+    ['file' => 'import.php',        'label' => 'Bulk Import',     'icon' => 'bi-cloud-upload',  'roles' => ['super_admin','company_admin','branch_manager']],
     ['file' => 'users.php',         'label' => 'Users',           'icon' => 'bi-people',        'roles' => ['super_admin','company_admin','branch_manager']],
 ];
 

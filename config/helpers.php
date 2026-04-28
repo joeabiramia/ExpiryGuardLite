@@ -163,6 +163,37 @@ function getLoggedInUser(mysqli $conn, int $userId): ?array
 }
 
 
+function refreshProductStatuses(mysqli $conn, int $companyId): int
+{
+    // Recalculate status for all non-removed products based on today's date + category rules
+    $stmt = $conn->prepare("
+        UPDATE products p
+        LEFT JOIN category_rules cr ON p.category = cr.category_name
+        SET p.status =
+            CASE
+                WHEN p.expiry_date < CURDATE()
+                    THEN 'expired'
+                WHEN p.expiry_date <= DATE_ADD(CURDATE(), INTERVAL COALESCE(cr.alert_days_before, 4) DAY)
+                    THEN 'near_expiry'
+                ELSE 'active'
+            END
+        WHERE p.company_id = ?
+          AND p.is_removed = 0
+    ");
+
+    if (!$stmt) {
+        return 0;
+    }
+
+    $stmt->bind_param('i', $companyId);
+    $stmt->execute();
+    $affected = $stmt->affected_rows;
+    $stmt->close();
+
+    return $affected;
+}
+
+
 function logActivity(
     mysqli $conn,
     int $companyId,

@@ -33,6 +33,7 @@ $expiry_date  = trim($_POST['expiry_date'] ?? '');
 $quantity     = max(1, (int)($_POST['quantity'] ?? 1));
 $unit         = trim($_POST['unit'] ?? '');
 $notes        = trim($_POST['notes'] ?? '');
+$unit_price   = isset($_POST['unit_price']) && $_POST['unit_price'] !== '' ? round((float)$_POST['unit_price'], 2) : null;
 
 if ($barcode === '' || $product_name === '' || $category === '' || $expiry_date === '') {
     jsonResponse(false, 'Barcode, product name, category, and expiry date are required', null, 400);
@@ -100,9 +101,9 @@ if ($daysLeft < 0) {
 
 $stmt = $conn->prepare("
     INSERT INTO products
-        (company_id, branch_id, barcode, product_name, category, quantity, unit,
+        (company_id, branch_id, barcode, product_name, category, quantity, unit_price, unit,
          expiry_date, status, entered_by, entered_on, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)
 ");
 
 if (!$stmt) {
@@ -110,15 +111,16 @@ if (!$stmt) {
 }
 
 // Types: company_id(i) branch_id(i) barcode(s) product_name(s) category(s)
-//        quantity(i) unit(s) expiry_date(s) status(s) entered_by(i) notes(s)
+//        quantity(i) unit_price(d) unit(s) expiry_date(s) status(s) entered_by(i) notes(s)
 $stmt->bind_param(
-    'iisssisssis',
+    'iisssidsssis',
     $company_id,
     $branch_id,
     $barcode,
     $product_name,
     $category,
     $quantity,
+    $unit_price,
     $unit,
     $expiry_date,
     $status,

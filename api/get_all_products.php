@@ -73,7 +73,7 @@ if ($q !== '') {
 switch ($sort) {
     case 'oldest':     $sql .= ' ORDER BY p.entered_on ASC';  break;
     case 'near_expiry': $sql .= ' ORDER BY p.expiry_date ASC'; break;
-    default:           $sql .= ' ORDER BY p.entered_on DESC';
+    default:           $sql .= ' ORDER BY p.expiry_date ASC';
 }
 
 $stmt = $conn->prepare($sql);
