@@ -63,18 +63,19 @@ if ($isAdmin) {
     $statusDist = dbQ($conn, "SELECT status, COUNT(*) AS total FROM products WHERE $pScope AND is_removed=0 GROUP BY status ORDER BY total DESC");
 
     // Monthly removals trend (last 6 months)
-  $removalTrend = array_reverse(dbQ($conn, "
+// Monthly removals trend, last 6 months
+$removalTrend = array_reverse(dbQ($conn, "
     SELECT 
-        DATE_FORMAT(removed_on,'%Y-%m') AS month,
-        MIN(DATE_FORMAT(removed_on,'%b %Y')) AS label,
+        DATE_FORMAT(removed_on, '%Y-%m') AS month,
+        MIN(DATE_FORMAT(removed_on, '%b %Y')) AS label,
         COUNT(*) AS removed_count,
         COALESCE(SUM(unit_price * quantity), 0) AS waste_value
     FROM products
-    WHERE $pScope 
-      AND is_removed = 1 
+    WHERE $pScope
+      AND is_removed = 1
       AND removed_on IS NOT NULL
-    GROUP BY DATE_FORMAT(removed_on,'%Y-%m')
-    ORDER BY month DESC 
+    GROUP BY DATE_FORMAT(removed_on, '%Y-%m')
+    ORDER BY month DESC
     LIMIT 6
 "));
 
@@ -104,9 +105,20 @@ if ($isAdmin) {
 
 } else {
     // ── BRANCH DATA ──────────────────────────────────────────
-    $sw = "WHERE company_id=$myCompanyId";
-    if ($myBranchId > 0) $sw .= " AND branch_id=$myBranchId";
-    if ($branchFilterValue !== null) $sw .= $branchFilterSql;
+  $sw = "WHERE company_id=$myCompanyId";
+$swAlias = "WHERE p.company_id=$myCompanyId";
+
+if ($myBranchId > 0) {
+    $sw .= " AND branch_id=$myBranchId";
+    $swAlias .= " AND p.branch_id=$myBranchId";
+}
+
+if ($branchFilterValue !== null) {
+    $branchId = (int)$branchFilterValue;
+
+    $sw .= " AND branch_id=$branchId";
+    $swAlias .= " AND p.branch_id=$branchId";
+}
 
     $kpi = dbOne($conn, "SELECT
         COUNT(*) AS total,
@@ -128,7 +140,21 @@ if ($isAdmin) {
     GROUP BY DATE(entered_on)
     ORDER BY day ASC
 ");
-    $recentItems = dbQ($conn, "SELECT p.product_name,p.barcode,p.expiry_date,p.status,b.branch_name FROM products p LEFT JOIN branches b ON p.branch_id=b.id $sw ORDER BY p.expiry_date ASC LIMIT 10");
+    $recentItems = dbQ($conn, "
+    SELECT 
+        p.product_name,
+        p.barcode,
+        p.category,
+        p.expiry_date,
+        p.status,
+        b.branch_name
+    FROM products p
+    LEFT JOIN branches b ON p.branch_id = b.id
+    $swAlias
+      AND p.is_removed = 0
+    ORDER BY p.expiry_date ASC
+    LIMIT 10
+");
     $catBreakdown = dbQ($conn, "SELECT category, COUNT(*) AS total, SUM(status='near_expiry') AS near_expiry, SUM(status='expired') AS expired FROM products $sw AND is_removed=0 AND category IS NOT NULL GROUP BY category ORDER BY total DESC LIMIT 6");
 }
 ?>
@@ -428,7 +454,7 @@ if ($isAdmin) {
 <div class="page-header">
   <div class="page-header-text">
     <h1>Dashboard</h1>
-    <p>Branch overview<?= $selectedBranch!=='all'?' — filtered':'' ?> — <?= date('M j, Y') ?></p>
+  <p>Branch overview<?= $branchFilterValue !== null ? ' — filtered' : '' ?> — <?= date('M j, Y') ?></p>
   </div>
   <div style="display:flex;gap:8px">
     <a href="export_csv.php" class="btn-eg btn-ghost-eg btn-sm-eg"><i class="bi bi-download"></i> Export</a>
