@@ -63,16 +63,20 @@ if ($isAdmin) {
     $statusDist = dbQ($conn, "SELECT status, COUNT(*) AS total FROM products WHERE $pScope AND is_removed=0 GROUP BY status ORDER BY total DESC");
 
     // Monthly removals trend (last 6 months)
-    $removalTrend = array_reverse(dbQ($conn, "
-        SELECT DATE_FORMAT(removed_on,'%Y-%m') AS month,
-               DATE_FORMAT(removed_on,'%b %Y') AS label,
-               COUNT(*) AS removed_count,
-               COALESCE(SUM(unit_price*quantity),0) AS waste_value
-        FROM products
-        WHERE $pScope AND is_removed=1 AND removed_on IS NOT NULL
-        GROUP BY DATE_FORMAT(removed_on,'%Y-%m')
-        ORDER BY month DESC LIMIT 6
-    "));
+  $removalTrend = array_reverse(dbQ($conn, "
+    SELECT 
+        DATE_FORMAT(removed_on,'%Y-%m') AS month,
+        MIN(DATE_FORMAT(removed_on,'%b %Y')) AS label,
+        COUNT(*) AS removed_count,
+        COALESCE(SUM(unit_price * quantity), 0) AS waste_value
+    FROM products
+    WHERE $pScope 
+      AND is_removed = 1 
+      AND removed_on IS NOT NULL
+    GROUP BY DATE_FORMAT(removed_on,'%Y-%m')
+    ORDER BY month DESC 
+    LIMIT 6
+"));
 
     // Category alerts
     $catAlert = dbQ($conn, "
@@ -113,7 +117,17 @@ if ($isAdmin) {
         FROM products $sw");
 
     $statusDist  = dbQ($conn, "SELECT status, COUNT(*) AS total FROM products $sw AND is_removed=0 GROUP BY status ORDER BY total DESC");
-    $addedTrend  = dbQ($conn, "SELECT DATE(entered_on) AS day, DATE_FORMAT(entered_on,'%b %d') AS label, COUNT(*) AS total FROM products $sw AND entered_on>=DATE_SUB(CURDATE(),INTERVAL 10 DAY) GROUP BY DATE(entered_on) ORDER BY day ASC");
+    $addedTrend = dbQ($conn, "
+    SELECT 
+        DATE(entered_on) AS day,
+        MIN(DATE_FORMAT(entered_on,'%b %d')) AS label,
+        COUNT(*) AS total
+    FROM products 
+    $sw 
+      AND entered_on >= DATE_SUB(CURDATE(), INTERVAL 10 DAY)
+    GROUP BY DATE(entered_on)
+    ORDER BY day ASC
+");
     $recentItems = dbQ($conn, "SELECT p.product_name,p.barcode,p.expiry_date,p.status,b.branch_name FROM products p LEFT JOIN branches b ON p.branch_id=b.id $sw ORDER BY p.expiry_date ASC LIMIT 10");
     $catBreakdown = dbQ($conn, "SELECT category, COUNT(*) AS total, SUM(status='near_expiry') AS near_expiry, SUM(status='expired') AS expired FROM products $sw AND is_removed=0 AND category IS NOT NULL GROUP BY category ORDER BY total DESC LIMIT 6");
 }

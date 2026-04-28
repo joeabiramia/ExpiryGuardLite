@@ -63,18 +63,32 @@ $hasPrices = (float)($kpi['stock_value']??0) + (float)($kpi['waste_value']??0) >
 
 // ── 2. Products added trend ────────────────────────────────────────────────
 $addedTrend = anaQ($conn, "
-    SELECT ".iv($grpExpr,'entered_on')." AS grp, ".iv($lblExpr,'entered_on')." AS label, COUNT(*) AS total
-    FROM products WHERE $bScope $periodSQL
-    GROUP BY grp ORDER BY grp ASC LIMIT 120
+    SELECT 
+        ".iv($grpExpr,'entered_on')." AS grp,
+        MIN(".iv($lblExpr,'entered_on').") AS label,
+        COUNT(*) AS total
+    FROM products 
+    WHERE $bScope $periodSQL
+    GROUP BY ".iv($grpExpr,'entered_on')."
+    ORDER BY grp ASC 
+    LIMIT 120
 ");
 
 // ── 3. Removals trend ─────────────────────────────────────────────────────
 $removedTrend = anaQ($conn, "
-    SELECT ".iv($grpExpr,'removed_on')." AS grp, ".iv($lblExpr,'removed_on')." AS label,
-           COUNT(*) AS removed_count,
-           COALESCE(SUM(unit_price*quantity),0) AS waste_value
-    FROM products WHERE $bScope AND is_removed=1 $removedSQL AND removed_on IS NOT NULL
-    GROUP BY grp ORDER BY grp ASC LIMIT 120
+    SELECT 
+        ".iv($grpExpr,'removed_on')." AS grp,
+        MIN(".iv($lblExpr,'removed_on').") AS label,
+        COUNT(*) AS removed_count,
+        COALESCE(SUM(unit_price * quantity), 0) AS waste_value
+    FROM products 
+    WHERE $bScope 
+      AND is_removed = 1 
+      $removedSQL 
+      AND removed_on IS NOT NULL
+    GROUP BY ".iv($grpExpr,'removed_on')."
+    ORDER BY grp ASC 
+    LIMIT 120
 ");
 
 // ── 4. Expiry timeline — products expiring in upcoming windows ─────────────
@@ -119,10 +133,18 @@ $catAnalysis = anaQ($conn, "
 
 // ── 6. Products added by interval (for the per-category stacked chart) ─────
 $catTrend = anaQ($conn, "
-    SELECT ".iv($grpExpr,'entered_on')." AS grp, ".iv($lblExpr,'entered_on')." AS label,
-           category, COUNT(*) AS total
-    FROM products WHERE $bScope $periodSQL AND category IS NOT NULL
-    GROUP BY grp, category ORDER BY grp ASC LIMIT 300
+    SELECT 
+        ".iv($grpExpr,'entered_on')." AS grp,
+        MIN(".iv($lblExpr,'entered_on').") AS label,
+        category,
+        COUNT(*) AS total
+    FROM products 
+    WHERE $bScope 
+      $periodSQL 
+      AND category IS NOT NULL
+    GROUP BY ".iv($grpExpr,'entered_on').", category
+    ORDER BY grp ASC 
+    LIMIT 300
 ");
 
 // ── 7. Branch comparison (admin only) ─────────────────────────────────────
