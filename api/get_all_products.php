@@ -71,9 +71,9 @@ if ($q !== '') {
 }
 
 switch ($sort) {
-    case 'oldest':     $sql .= ' ORDER BY p.entered_on ASC';  break;
-    case 'near_expiry': $sql .= ' ORDER BY p.expiry_date ASC'; break;
-    default:           $sql .= ' ORDER BY p.expiry_date ASC';
+    case 'oldest':     $sql .= ' ORDER BY p.entered_on ASC  LIMIT 500'; break;
+    case 'near_expiry': $sql .= ' ORDER BY p.expiry_date ASC LIMIT 500'; break;
+    default:           $sql .= ' ORDER BY p.expiry_date ASC LIMIT 500';
 }
 
 $stmt = $conn->prepare($sql);

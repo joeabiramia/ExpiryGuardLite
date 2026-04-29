@@ -28,7 +28,7 @@ if (!in_array($apiUser['role'], ['super_admin', 'company_admin'], true) && $apiU
     $params[] = (int)$apiUser['branch_id'];
 }
 
-$sql .= ' ORDER BY p.expiry_date ASC';
+$sql .= ' ORDER BY p.expiry_date ASC LIMIT 500';
 
 $stmt = $conn->prepare($sql);
 $stmt->bind_param($types, ...$params);

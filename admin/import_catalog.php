@@ -1,9 +1,11 @@
 <?php
 include 'layout_top.php';
 
-$userRole = $_SESSION['role'] ?? 'viewer';
+$userRole ??= 'viewer';
 
-if (!in_array($userRole, ['super_admin', 'company_admin', 'branch_manager'], true)) {
+$_impCatUid = (int)($_SESSION['user_id'] ?? 0);
+if (!in_array($userRole, ['super_admin', 'company_admin', 'branch_manager'], true)
+    && !userHasPermission($conn, $_impCatUid, 'manage_products')) {
     header('Location: dashboard.php');
     exit();
 }

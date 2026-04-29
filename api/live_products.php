@@ -37,7 +37,7 @@ if (!in_array($apiUser['role'], ['super_admin', 'company_admin'], true) && $bran
     $params[] = (int)$selectedBranch;
 }
 
-$sql .= ' ORDER BY p.id DESC';
+$sql .= ' ORDER BY p.id DESC LIMIT 500';
 
 $stmt = $conn->prepare($sql);
 $stmt->bind_param($types, ...$params);

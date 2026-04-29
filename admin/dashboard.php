@@ -7,6 +7,13 @@ $myCompanyId = (int)($_SESSION['company_id'] ?? 0);
 $myBranchId  = (int)($_SESSION['branch_id']  ?? 0);
 $isAdmin     = in_array($myRole, ['super_admin', 'company_admin'], true);
 
+// Employees and viewers land on products page unless granted view_dashboard
+if (!in_array($myRole, ['super_admin', 'company_admin', 'branch_manager'], true)
+    && !userHasPermission($conn, $myUserId, 'view_dashboard')) {
+    header('Location: products.php');
+    exit();
+}
+
 function dbQ(mysqli $conn, string $sql): array {
     $res = $conn->query($sql);
     $rows = $res->fetch_all(MYSQLI_ASSOC);

@@ -40,7 +40,7 @@ if ($admin['role'] === 'branch_manager') {
     $params[] = (int)$admin['id'];
 }
 
-$sql .= ' ORDER BY u.created_at DESC';
+$sql .= ' ORDER BY u.created_at DESC LIMIT 500';
 
 $stmt = $conn->prepare($sql);
 if ($types !== '') {

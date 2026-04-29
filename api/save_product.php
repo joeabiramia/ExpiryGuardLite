@@ -81,15 +81,22 @@ if ($checkExists) {
 $daysLeft = (strtotime($expiry_date) - strtotime(date('Y-m-d'))) / 86400;
 
 $ruleStmt = $conn->prepare("
-    SELECT alert_days_before FROM category_rules WHERE category_name = ? LIMIT 1
+    SELECT alert_days_before, auto_remove_days_before FROM category_rules WHERE category_name = ? LIMIT 1
 ");
 $ruleStmt->bind_param('s', $category);
 $ruleStmt->execute();
-$ruleRes   = $ruleStmt->get_result();
-$rule      = $ruleRes->fetch_assoc();
-$alertDays = $rule ? (int)$rule['alert_days_before'] : 4;
+$ruleRes        = $ruleStmt->get_result();
+$rule           = $ruleRes->fetch_assoc();
+$alertDays      = $rule ? (int)$rule['alert_days_before']      : 4;
+$autoRemoveDays = $rule ? (int)$rule['auto_remove_days_before'] : 0;
 $ruleRes->free();
 $ruleStmt->close();
+
+// auto_remove_days_before = days AFTER expiry before auto-removal
+// If inserting a product already past that threshold, flag it removed immediately
+if ($autoRemoveDays > 0 && $daysLeft < 0 && abs($daysLeft) >= $autoRemoveDays) {
+    jsonResponse(false, 'Product is past its auto-remove period for this category and cannot be added');
+}
 
 if ($daysLeft < 0) {
     $status = 'expired';

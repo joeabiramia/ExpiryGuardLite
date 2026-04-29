@@ -1,79 +1,184 @@
 <?php
-require_once '../config/helpers.php';
-require_once '../config/db.php';
-require_once '../config/api_auth.php';
+ini_set('display_errors', '0');
+error_reporting(0);
 
-addSecurityHeaders();
+set_exception_handler(function (Throwable $e) {
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode([
+        'success' => false,
+        'message' => 'Server error: ' . $e->getMessage()
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+});
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    jsonResponse(false, 'Invalid request method', null, 405);
+require_once __DIR__ . '/../config/helpers.php';
+require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../config/auth.php';
+
+if (function_exists('addSecurityHeaders')) {
+    addSecurityHeaders();
+} else {
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: SAMEORIGIN');
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+}
+requireLogin();
+
+header('Content-Type: application/json; charset=utf-8');
+
+$myUserId    = (int)($_SESSION['user_id'] ?? 0);
+$myRole      = $_SESSION['role'] ?? 'viewer';
+$myCompanyId = (int)($_SESSION['company_id'] ?? 0);
+$myBranchId  = (int)($_SESSION['branch_id'] ?? 0);
+
+$productId = (int)($_POST['product_id'] ?? 0);
+
+if ($productId <= 0) {
+    jsonResponse(false, 'Invalid product ID.', null, 400);
 }
 
-$apiUser    = resolveApiUser($conn);
+$isManagerRole = in_array($myRole, ['super_admin', 'company_admin', 'branch_manager'], true);
+$isEmployee    = $myRole === 'employee';
+$isViewer      = $myRole === 'viewer';
 
-if ($apiUser['role'] === 'viewer') {
-    jsonResponse(false, 'Access denied — viewers cannot remove products', null, 403);
+$hasRemovePermission = userHasPermission($conn, $myUserId, 'remove_expired_items');
+$hasDeletePermission = userHasPermission($conn, $myUserId, 'delete_products');
+$hasManagePermission = userHasPermission($conn, $myUserId, 'manage_products');
+
+if ($isViewer) {
+    jsonResponse(false, 'Viewers are not allowed to remove products.', null, 403);
 }
 
-$product_id = (int)($_POST['product_id'] ?? 0);
-
-if ($product_id <= 0) {
-    jsonResponse(false, 'product_id is required', null, 400);
+if (!$isManagerRole && !$isEmployee && !$hasRemovePermission && !$hasDeletePermission && !$hasManagePermission) {
+    jsonResponse(false, 'You do not have permission to remove products.', null, 403);
 }
 
-// Verify the product exists and belongs to user's branch (or super_admin sees all)
-$pStmt = $conn->prepare("
-    SELECT id, company_id, branch_id, product_name, barcode
+/*
+|--------------------------------------------------------------------------
+| Load product first
+|--------------------------------------------------------------------------
+*/
+$stmt = $conn->prepare("
+    SELECT 
+        id,
+        company_id,
+        branch_id,
+        product_name,
+        barcode,
+        status,
+        is_removed
     FROM products
-    WHERE id = ? AND is_removed = 0
+    WHERE id = ?
     LIMIT 1
 ");
-$pStmt->bind_param('i', $product_id);
-$pStmt->execute();
-$pRes    = $pStmt->get_result();
-$product = $pRes->fetch_assoc();
-$pRes->free();
-$pStmt->close();
+
+if (!$stmt) {
+    jsonResponse(false, 'Database error: ' . $conn->error, null, 500);
+}
+
+$stmt->bind_param('i', $productId);
+$stmt->execute();
+
+$result = $stmt->get_result();
+$product = $result->fetch_assoc();
+
+$result->free();
+$stmt->close();
 
 if (!$product) {
-    jsonResponse(false, 'Product not found', null, 404);
+    jsonResponse(false, 'Product not found.', null, 404);
 }
 
-// Enforce branch scope for non-super_admin
-if ($apiUser['role'] !== 'super_admin') {
-    if ((int)$product['company_id'] !== (int)$apiUser['company_id']) {
-        jsonResponse(false, 'Access denied', null, 403);
-    }
-    if (!in_array($apiUser['role'], ['company_admin'], true)) {
-        if ((int)$product['branch_id'] !== (int)$apiUser['branch_id']) {
-            jsonResponse(false, 'Access denied', null, 403);
-        }
+if ((int)$product['is_removed'] === 1) {
+    jsonResponse(false, 'Product is already removed.', null, 409);
+}
+
+/*
+|--------------------------------------------------------------------------
+| Scope protection
+|--------------------------------------------------------------------------
+| super_admin: any company can be allowed depending on your system,
+| but here we still keep company protection unless company_id is 0.
+| company_admin: own company
+| branch_manager / employee: own branch
+|--------------------------------------------------------------------------
+*/
+
+if ($myRole !== 'super_admin') {
+    if ((int)$product['company_id'] !== $myCompanyId) {
+        jsonResponse(false, 'You cannot remove products from another company.', null, 403);
     }
 }
 
-$removed_by = (int)$apiUser['id'];
-$status     = 'removed';
+if (in_array($myRole, ['branch_manager', 'employee'], true) && $myBranchId > 0) {
+    if ((int)$product['branch_id'] !== $myBranchId) {
+        jsonResponse(false, 'You cannot remove products from another branch.', null, 403);
+    }
+}
 
-$stmt = $conn->prepare("
+/*
+|--------------------------------------------------------------------------
+| Employee rule
+|--------------------------------------------------------------------------
+| Employees can remove only near_expiry or expired items.
+|--------------------------------------------------------------------------
+*/
+
+if ($isEmployee && !$isManagerRole) {
+    if (!in_array($product['status'], ['near_expiry', 'expired'], true)) {
+        jsonResponse(false, 'Employees can only remove near-expiry or expired products.', null, 403);
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
+| Remove product
+|--------------------------------------------------------------------------
+| This is a soft remove, not a hard delete.
+|--------------------------------------------------------------------------
+*/
+
+$notes = 'Removed from products page';
+
+$update = $conn->prepare("
     UPDATE products
-    SET status = ?, is_removed = 1, removed_by = ?, removed_on = NOW()
+    SET 
+        is_removed = 1,
+        status = 'removed',
+        removed_by = ?,
+        removed_on = NOW(),
+        notes = CASE 
+            WHEN notes IS NULL OR notes = '' THEN ?
+            ELSE CONCAT(notes, '\n', ?)
+        END
     WHERE id = ?
+    LIMIT 1
 ");
-$stmt->bind_param('sii', $status, $removed_by, $product_id);
 
-if (!$stmt->execute()) {
-    jsonResponse(false, 'Failed to mark product as removed', null, 500);
+if (!$update) {
+    jsonResponse(false, 'Database error: ' . $conn->error, null, 500);
 }
 
-logActivity(
-    $conn,
-    (int)$product['company_id'],
-    (int)$product['branch_id'],
-    $removed_by,
-    'remove_product',
-    'products',
-    $product_id,
-    "Removed product: {$product['product_name']} (barcode: {$product['barcode']})"
-);
+$update->bind_param('issi', $myUserId, $notes, $notes, $productId);
 
-jsonResponse(true, 'Product marked as removed');
+if (!$update->execute()) {
+    $update->close();
+    jsonResponse(false, 'Failed to remove product.', null, 500);
+}
+
+$affected = $update->affected_rows;
+$update->close();
+
+if ($affected <= 0) {
+    jsonResponse(false, 'Product was not updated.', null, 409);
+}
+
+unset($_SESSION['notif_count_cache']);
+unset($_SESSION['notif_count_ts']);
+
+jsonResponse(true, 'Product removed successfully.', [
+    'product_id' => $productId,
+    'product_name' => $product['product_name'],
+    'barcode' => $product['barcode'],
+]);

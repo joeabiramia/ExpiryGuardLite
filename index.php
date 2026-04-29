@@ -1,7 +1,11 @@
 <?php
 session_start();
 if (isset($_SESSION['user_id'])) {
-    header('Location: admin/dashboard.php');
+    $role    = $_SESSION['role'] ?? '';
+    $landing = in_array($role, ['employee', 'viewer'], true)
+             ? 'admin/products.php'
+             : 'admin/dashboard.php';
+    header("Location: $landing");
     exit();
 }
 ?>
@@ -77,7 +81,11 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
 
     if (data.success) {
       btnText.textContent = 'Redirecting…';
-      window.location.href = 'admin/dashboard.php';
+      const role    = data.data?.role ?? '';
+      const landing = ['employee', 'viewer'].includes(role)
+                    ? 'admin/products.php'
+                    : 'admin/dashboard.php';
+      window.location.href = landing;
     } else {
       msg.innerHTML = `<div style="background:var(--red-light);color:#991b1b;border-radius:9px;padding:10px 14px;font-size:.84rem;margin-bottom:14px"><i class="bi bi-exclamation-circle me-1"></i>${data.message}</div>`;
       btn.disabled = false;

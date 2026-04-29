@@ -1,8 +1,14 @@
 <?php
 include 'layout_top.php';
-$userRole = $_SESSION['role'] ?? 'viewer';
+$userRole ??= 'viewer';
 
-if (!in_array($userRole, ['super_admin', 'company_admin', 'branch_manager'], true)) {
+$_catUid    = (int)($_SESSION['user_id'] ?? 0);
+$canManageCatalog = in_array($userRole, ['super_admin', 'company_admin', 'branch_manager'], true)
+                 || userHasPermission($conn, $_catUid, 'manage_products');
+$canViewCatalog   = $canManageCatalog
+                 || userHasPermission($conn, $_catUid, 'view_products');
+
+if (!$canViewCatalog) {
     header('Location: dashboard.php');
     exit();
 }
@@ -23,49 +29,49 @@ $page = max(1, (int)($_GET['page'] ?? 1));
 $perPage = 25;
 $offset = ($page - 1) * $perPage;
 
-$where = "WHERE 1=1";
+// Build parameterized WHERE clause
+$whereSql = "WHERE 1=1";
+$params   = [];
+$types    = '';
 
 if ($search !== '') {
-    $safeSearch = '%' . $conn->real_escape_string($search) . '%';
-    $where .= "
-        AND (
-            item_id LIKE '$safeSearch'
-            OR barcode LIKE '$safeSearch'
-            OR product_name LIKE '$safeSearch'
-            OR supplier LIKE '$safeSearch'
-            OR category LIKE '$safeSearch'
-            OR measurement LIKE '$safeSearch'
-        )
-    ";
+    $like      = '%' . $search . '%';
+    $whereSql .= " AND (item_id LIKE ? OR barcode LIKE ? OR product_name LIKE ?
+                    OR supplier LIKE ? OR category LIKE ? OR measurement LIKE ?)";
+    for ($i = 0; $i < 6; $i++) $params[] = $like;
+    $types .= 'ssssss';
 }
 
 if ($catFilter !== '') {
-    $safeCat = $conn->real_escape_string($catFilter);
-    $where .= " AND category = '$safeCat'";
+    $whereSql .= " AND category = ?";
+    $params[]  = $catFilter;
+    $types    .= 's';
 }
 
-$totalRes = $conn->query("SELECT COUNT(*) AS total FROM product_catalog $where");
-$totalItems = $totalRes ? (int)$totalRes->fetch_assoc()['total'] : 0;
+// Total count
+$countStmt = $conn->prepare("SELECT COUNT(*) AS total FROM product_catalog $whereSql");
+if ($types !== '') $countStmt->bind_param($types, ...$params);
+$countStmt->execute();
+$totalItems = (int)$countStmt->get_result()->fetch_assoc()['total'];
+$countStmt->close();
 $totalPages = max(1, (int)ceil($totalItems / $perPage));
 
-$itemsRes = $conn->query("
-    SELECT
-        id,
-        item_id,
-        barcode,
-        product_name,
-        category,
-        measurement,
-        unit_price,
-        stock_level,
-        supplier,
-        image_url
+// Paginated data
+$pageParams = array_merge($params, [$perPage, $offset]);
+$pageTypes  = $types . 'ii';
+$itemsStmt  = $conn->prepare("
+    SELECT id, item_id, barcode, product_name, category, measurement,
+           unit_price, stock_level, supplier, image_url
     FROM product_catalog
-    $where
+    $whereSql
     ORDER BY product_name ASC
-    LIMIT $perPage OFFSET $offset
+    LIMIT ? OFFSET ?
 ");
-$items = $itemsRes ? $itemsRes->fetch_all(MYSQLI_ASSOC) : [];
+if ($pageTypes !== '') $itemsStmt->bind_param($pageTypes, ...$pageParams);
+$itemsStmt->execute();
+$itemsRes = $itemsStmt->get_result();
+$items    = $itemsRes ? $itemsRes->fetch_all(MYSQLI_ASSOC) : [];
+$itemsStmt->close();
 
 $statsRes = $conn->query("
     SELECT

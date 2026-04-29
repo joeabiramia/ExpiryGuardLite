@@ -165,7 +165,31 @@ function getLoggedInUser(mysqli $conn, int $userId): ?array
 
 function refreshProductStatuses(mysqli $conn, int $companyId): int
 {
-    // Recalculate status for all non-removed products based on today's date + category rules
+    // Auto-remove products that have been expired past their category's auto_remove_days_before threshold.
+    // Treated as days AFTER expiry: if a product expired 31 days ago and auto_remove_days_before = 30, remove it.
+    $autoRemoveStmt = $conn->prepare("
+        UPDATE products p
+        INNER JOIN category_rules cr ON p.category = cr.category_name
+        SET p.is_removed = 1,
+            p.removed_on = NOW(),
+            p.removed_by = NULL
+        WHERE p.company_id      = ?
+          AND p.is_removed      = 0
+          AND cr.auto_remove_days_before > 0
+          AND DATEDIFF(CURDATE(), p.expiry_date) >= cr.auto_remove_days_before
+    ");
+
+    if ($autoRemoveStmt) {
+        $autoRemoveStmt->bind_param('i', $companyId);
+        $autoRemoveStmt->execute();
+        $autoRemoveStmt->close();
+    }
+
+    // Recalculate status for all remaining non-removed products based on today's date + category rules.
+    // Logic:
+    //   expired    → expiry_date is in the past
+    //   near_expiry → within alert_days_before days of expiry (or today == expiry)
+    //   active     → more than alert_days_before days until expiry
     $stmt = $conn->prepare("
         UPDATE products p
         LEFT JOIN category_rules cr ON p.category = cr.category_name

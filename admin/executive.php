@@ -1,5 +1,6 @@
 <?php
 include 'layout_top.php';
+$userRole ??= 'viewer';
 
 // Executive dashboard — company_admin and super_admin only
 if (!in_array($userRole, ['super_admin', 'company_admin'], true)) {

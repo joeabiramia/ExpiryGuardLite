@@ -1,9 +1,18 @@
 <?php
 include 'layout_top.php';
+$userRole          ??= 'viewer';
+$selectedBranch    ??= 'all';
+$branchFilterValue ??= null;
 
 $myRole      = $_SESSION['role']      ?? 'viewer';
 $myCompanyId = (int)($_SESSION['company_id'] ?? 0);
 $myBranchId  = (int)($_SESSION['branch_id']  ?? 0);
+$myUserId    = (int)($_SESSION['user_id']     ?? 0);
+
+// Can remove alerts if: not a viewer AND (is manager-level OR has an explicit remove permission)
+$canRemove = $myRole !== 'viewer'
+          && (in_array($myRole, ['super_admin', 'company_admin', 'branch_manager'], true)
+              || userHasPermission($conn, $myUserId, 'remove_expired_items'));
 
 // Filters
 $search       = trim($_GET['q']         ?? '');
@@ -11,37 +20,90 @@ $statusFilter = trim($_GET['status']    ?? '');
 $catFilter    = trim($_GET['category']  ?? '');
 $dateFrom     = trim($_GET['date_from'] ?? '');
 $dateTo       = trim($_GET['date_to']   ?? '');
+$page         = max(1, (int)($_GET['page'] ?? 1));
+$perPage      = 25;
+$offset       = ($page - 1) * $perPage;
 
-// Categories for dropdown
-$catRes     = $conn->query("SELECT category_name FROM category_rules ORDER BY category_name ASC");
-$categories = $catRes->fetch_all(MYSQLI_ASSOC);
+// Categories for dropdown — session-cached to avoid a query on every page load
+if (!isset($_SESSION['category_rules_cache'])) {
+    $catRes = $conn->query("SELECT category_name FROM category_rules ORDER BY category_name ASC");
+    $_SESSION['category_rules_cache'] = $catRes ? $catRes->fetch_all(MYSQLI_ASSOC) : [];
+}
+$categories = $_SESSION['category_rules_cache'];
 
-$sql = "SELECT p.*, u.full_name AS entered_by_name, b.branch_name
-        FROM products p
-        LEFT JOIN users    u ON p.entered_by = u.id
-        LEFT JOIN branches b ON p.branch_id  = b.id
-        WHERE p.status IN ('near_expiry','expired')
-          AND p.is_removed = 0
-          AND p.company_id = $myCompanyId";
+// Build parameterized WHERE clause
+$whereSql = "WHERE p.status IN ('near_expiry','expired')
+               AND p.is_removed = 0
+               AND p.company_id = ?";
+$params = [$myCompanyId];
+$types  = 'i';
 
 if (!in_array($myRole, ['super_admin','company_admin'], true) && $myBranchId > 0) {
-    $sql .= " AND p.branch_id = $myBranchId";
+    $whereSql .= " AND p.branch_id = ?";
+    $params[]  = $myBranchId;
+    $types    .= 'i';
 }
-if ($branchFilterValue !== null) $sql .= $branchFilterSqlAlias;
-if ($statusFilter !== '') $sql .= " AND p.status = '"   . $conn->real_escape_string($statusFilter) . "'";
-if ($catFilter    !== '') $sql .= " AND p.category = '" . $conn->real_escape_string($catFilter)    . "'";
-if ($dateFrom     !== '') $sql .= " AND p.expiry_date >= '" . $conn->real_escape_string($dateFrom) . "'";
-if ($dateTo       !== '') $sql .= " AND p.expiry_date <= '" . $conn->real_escape_string($dateTo)   . "'";
-if ($search       !== '') $sql .= " AND (p.product_name LIKE '%" . $conn->real_escape_string($search) . "%'
-                                    OR p.barcode LIKE '%"        . $conn->real_escape_string($search) . "%')";
-$sql .= " ORDER BY p.expiry_date ASC";
-
 if ($branchFilterValue !== null) {
-    $stmt = $conn->prepare($sql); $stmt->bind_param('s', $branchFilterValue); $stmt->execute();
-    $res  = $stmt->get_result(); $rows = $res->fetch_all(MYSQLI_ASSOC); $res->free(); $stmt->close();
-} else {
-    $res  = $conn->query($sql); $rows = $res->fetch_all(MYSQLI_ASSOC); $res->free();
+    $whereSql .= " AND p.branch_id = ?";
+    $params[]  = (int)$branchFilterValue;
+    $types    .= 'i';
 }
+if ($statusFilter !== '') {
+    $whereSql .= " AND p.status = ?";
+    $params[]  = $statusFilter;
+    $types    .= 's';
+}
+if ($catFilter !== '') {
+    $whereSql .= " AND p.category = ?";
+    $params[]  = $catFilter;
+    $types    .= 's';
+}
+if ($dateFrom !== '') {
+    $whereSql .= " AND p.expiry_date >= ?";
+    $params[]  = $dateFrom;
+    $types    .= 's';
+}
+if ($dateTo !== '') {
+    $whereSql .= " AND p.expiry_date <= ?";
+    $params[]  = $dateTo;
+    $types    .= 's';
+}
+if ($search !== '') {
+    $whereSql .= " AND (p.product_name LIKE ? OR p.barcode LIKE ?)";
+    $like      = '%' . $search . '%';
+    $params[]  = $like;
+    $params[]  = $like;
+    $types    .= 'ss';
+}
+
+// Total count for pagination
+$countStmt = $conn->prepare("SELECT COUNT(*) AS total FROM products p $whereSql");
+$countStmt->bind_param($types, ...$params);
+$countStmt->execute();
+$totalRows  = (int)$countStmt->get_result()->fetch_assoc()['total'];
+$countStmt->close();
+$totalPages = max(1, (int)ceil($totalRows / $perPage));
+
+// Fetch current page with explicit columns
+$pageParams = array_merge($params, [$perPage, $offset]);
+$pageTypes  = $types . 'ii';
+$dataStmt   = $conn->prepare(
+    "SELECT p.id, p.product_name, p.barcode, p.category, p.expiry_date, p.status,
+            u.full_name AS entered_by_name, b.branch_name,
+            pc.measurement AS catalog_measurement
+     FROM products p
+     LEFT JOIN users u ON p.entered_by = u.id
+     LEFT JOIN branches b ON p.branch_id = b.id
+     LEFT JOIN product_catalog pc ON pc.barcode = p.barcode
+     $whereSql
+     ORDER BY p.expiry_date ASC LIMIT ? OFFSET ?"
+);
+$dataStmt->bind_param($pageTypes, ...$pageParams);
+$dataStmt->execute();
+$res  = $dataStmt->get_result();
+$rows = $res->fetch_all(MYSQLI_ASSOC);
+$res->free();
+$dataStmt->close();
 
 $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
 ?>
@@ -110,7 +172,10 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
 
 <div class="eg-card">
   <div class="eg-card-header">
-    <span class="eg-card-title"><i class="bi bi-bell me-2"></i>Alerts (<?= count($rows) ?>)</span>
+    <span class="eg-card-title"><i class="bi bi-bell me-2"></i>Alerts (<?= $totalRows ?>)</span>
+    <?php if ($totalPages > 1): ?>
+    <span style="font-size:.78rem;color:var(--text-muted)">Page <?= $page ?> of <?= $totalPages ?></span>
+    <?php endif; ?>
   </div>
 
   <div class="eg-table-wrap">
@@ -120,6 +185,7 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
           <th>Product</th>
           <th>Barcode</th>
           <th>Category</th>
+          <th>Measurement</th>
           <th>Expiry Date</th>
           <th>Days Left</th>
           <th>Status</th>
@@ -130,7 +196,7 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
       </thead>
       <tbody>
       <?php if (empty($rows)): ?>
-        <tr><td colspan="9"><div class="empty-state"><i class="bi bi-check-circle"></i><p>All clear! No alerts at this time.</p></div></td></tr>
+        <tr><td colspan="10"><div class="empty-state"><i class="bi bi-check-circle"></i><p>All clear! No alerts at this time.</p></div></td></tr>
       <?php endif; ?>
       <?php foreach ($rows as $item):
         $daysLeft    = (int)((strtotime($item['expiry_date']) - strtotime(date('Y-m-d'))) / 86400);
@@ -141,6 +207,7 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
           <td><div style="font-weight:600;font-size:.85rem"><?= htmlspecialchars($item['product_name']) ?></div></td>
           <td style="font-size:.78rem;color:var(--text-muted)"><?= htmlspecialchars($item['barcode']) ?></td>
           <td style="font-size:.8rem"><?= htmlspecialchars($item['category'] ?? '—') ?></td>
+          <td style="font-size:.78rem;color:var(--text-muted)"><?= htmlspecialchars($item['catalog_measurement'] ?? '—') ?></td>
           <td style="font-size:.82rem"><?= date('M j, Y', strtotime($item['expiry_date'])) ?></td>
           <td><span style="font-weight:700;font-size:.8rem;color:<?= $daysColor ?>"><?= $daysDisplay ?></span></td>
           <td>
@@ -151,7 +218,7 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
           <td style="font-size:.78rem;color:var(--text-muted)"><?= htmlspecialchars($item['branch_name'] ?? '—') ?></td>
           <td style="font-size:.78rem;color:var(--text-muted)"><?= htmlspecialchars($item['entered_by_name'] ?? '—') ?></td>
           <td>
-            <?php if (!in_array($myRole, ['viewer'], true)): ?>
+            <?php if ($canRemove): ?>
             <button class="btn-eg btn-danger-eg btn-xs-eg" onclick="removeProduct(<?= (int)$item['id'] ?>, '<?= htmlspecialchars($item['product_name'],ENT_QUOTES) ?>')">
               <i class="bi bi-trash3"></i> Remove
             </button>
@@ -164,6 +231,40 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
       </tbody>
     </table>
   </div>
+
+  <?php if ($totalPages > 1): ?>
+  <?php
+    $qp = $_GET;
+    $makeUrl = function (int $p) use ($qp): string {
+        $qp['page'] = $p;
+        return 'notifications.php?' . http_build_query($qp);
+    };
+    $visible = [1];
+    for ($i = $page - 1; $i <= $page + 1; $i++) {
+        if ($i > 1 && $i < $totalPages) $visible[] = $i;
+    }
+    $visible[] = $totalPages;
+    $visible = array_values(array_unique($visible));
+    sort($visible);
+  ?>
+  <div style="padding:14px 20px;display:flex;justify-content:center;align-items:center;gap:6px;border-top:1px solid var(--border);flex-wrap:wrap">
+    <?php if ($page > 1): ?>
+      <a href="<?= $makeUrl($page - 1) ?>" style="padding:6px 12px;border-radius:7px;font-size:.8rem;font-weight:600;text-decoration:none;background:var(--bg);color:var(--text-muted);border:1px solid var(--border)">Previous</a>
+    <?php else: ?>
+      <span style="padding:6px 12px;border-radius:7px;font-size:.8rem;font-weight:600;background:var(--bg);color:#aaa;border:1px solid var(--border);opacity:.6">Previous</span>
+    <?php endif; ?>
+    <?php $last = 0; foreach ($visible as $vp): ?>
+      <?php if ($last > 0 && $vp > $last + 1): ?><span style="padding:6px 8px;color:var(--text-muted);font-weight:700">...</span><?php endif; ?>
+      <?php $last = $vp; ?>
+      <a href="<?= $makeUrl($vp) ?>" style="padding:6px 11px;border-radius:7px;font-size:.8rem;font-weight:600;text-decoration:none;background:<?= $vp===$page?'var(--green)':'var(--bg)'?>;color:<?= $vp===$page?'#fff':'var(--text-muted)'?>;border:1px solid <?= $vp===$page?'var(--green)':'var(--border)'?>"><?= $vp ?></a>
+    <?php endforeach; ?>
+    <?php if ($page < $totalPages): ?>
+      <a href="<?= $makeUrl($page + 1) ?>" style="padding:6px 12px;border-radius:7px;font-size:.8rem;font-weight:600;text-decoration:none;background:var(--bg);color:var(--text-muted);border:1px solid var(--border)">Next</a>
+    <?php else: ?>
+      <span style="padding:6px 12px;border-radius:7px;font-size:.8rem;font-weight:600;background:var(--bg);color:#aaa;border:1px solid var(--border);opacity:.6">Next</span>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
 </div>
 
 <script>
@@ -177,7 +278,8 @@ async function removeProduct(id, name) {
   if (json.success) setTimeout(() => location.reload(), 700);
 }
 
-setTimeout(() => location.reload(), 60000);
+// Refresh every 5 minutes — status data is already kept fresh by the 10-hour session throttle
+setTimeout(() => location.reload(), 300000);
 </script>
 
 <?php include 'layout_bottom.php'; ?>

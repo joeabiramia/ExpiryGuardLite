@@ -31,27 +31,26 @@ if ($branchId > 0) {
     $params[] = $branchId;
 }
 
-function analyticsCount(mysqli $conn, string $sql, string $types, array $params): int
-{
-    $stmt = $conn->prepare($sql);
-    if ($types !== '') {
-        $stmt->bind_param($types, ...$params);
-    }
-    $stmt->execute();
-    $res   = $stmt->get_result();
-    $row   = $res->fetch_assoc();
-    $res->free();
-    $stmt->close();
-    return (int)($row['total'] ?? 0);
-}
+// One aggregated query replaces 5 separate COUNT queries
+$aggStmt = $conn->prepare("
+    SELECT
+        COUNT(*)                                          AS total_products,
+        SUM(status = 'active'      AND is_removed = 0)   AS active_products,
+        SUM(status = 'near_expiry' AND is_removed = 0)   AS near_expiry,
+        SUM(status = 'expired'     AND is_removed = 0)   AS expired,
+        SUM(is_removed = 1)                               AS removed
+    FROM products $where
+");
+$aggStmt->bind_param($types, ...$params);
+$aggStmt->execute();
+$agg = $aggStmt->get_result()->fetch_assoc();
+$aggStmt->close();
 
-$base = "SELECT COUNT(*) AS total FROM products $where";
-
-$totalProducts  = analyticsCount($conn, $base, $types, $params);
-$activeProducts = analyticsCount($conn, "$base AND status = 'active' AND is_removed = 0", $types, $params);
-$nearExpiry     = analyticsCount($conn, "$base AND status = 'near_expiry' AND is_removed = 0", $types, $params);
-$expired        = analyticsCount($conn, "$base AND status = 'expired' AND is_removed = 0", $types, $params);
-$removed        = analyticsCount($conn, "$base AND (status = 'removed' OR is_removed = 1)", $types, $params);
+$totalProducts  = (int)$agg['total_products'];
+$activeProducts = (int)$agg['active_products'];
+$nearExpiry     = (int)$agg['near_expiry'];
+$expired        = (int)$agg['expired'];
+$removed        = (int)$agg['removed'];
 
 $userWhere  = ' WHERE company_id = ?';
 $userParams = [$companyId];
@@ -61,7 +60,11 @@ if ($branchId > 0) {
     $userTypes  .= 'i';
     $userParams[] = $branchId;
 }
-$totalUsers = analyticsCount($conn, "SELECT COUNT(*) AS total FROM users $userWhere", $userTypes, $userParams);
+$uStmt = $conn->prepare("SELECT COUNT(*) AS total FROM users $userWhere");
+$uStmt->bind_param($userTypes, ...$userParams);
+$uStmt->execute();
+$totalUsers = (int)$uStmt->get_result()->fetch_assoc()['total'];
+$uStmt->close();
 
 // Status distribution chart
 $statusStmt = $conn->prepare("SELECT status, COUNT(*) AS total FROM products $where AND is_removed = 0 GROUP BY status ORDER BY total DESC");

@@ -21,29 +21,34 @@ if (!in_array($apiUser['role'], ['super_admin', 'company_admin'], true) && $bran
     $params[] = $branch_id;
 }
 
-function runCount(mysqli $conn, string $sql, string $types, array $params): int
-{
-    $stmt = $conn->prepare($sql);
-    if ($types !== '') {
-        $stmt->bind_param($types, ...$params);
-    }
-    $stmt->execute();
-    $res   = $stmt->get_result();
-    $row   = $res->fetch_assoc();
-    $res->free();
-    $stmt->close();
-    return (int)($row['total'] ?? 0);
-}
+// One aggregated query replaces 5 separate COUNT queries
+$aggStmt = $conn->prepare("
+    SELECT
+        COUNT(*)                                          AS total_products,
+        SUM(status = 'active'      AND is_removed = 0)   AS active_products,
+        SUM(status = 'near_expiry' AND is_removed = 0)   AS near_expiry,
+        SUM(status = 'expired'     AND is_removed = 0)   AS expired,
+        SUM(is_removed = 1)                               AS removed
+    FROM products $where
+");
+$aggStmt->bind_param($types, ...$params);
+$aggStmt->execute();
+$agg = $aggStmt->get_result()->fetch_assoc();
+$aggStmt->close();
 
-$base = "SELECT COUNT(*) AS total FROM products $where";
+$usersStmt = $conn->prepare("SELECT COUNT(*) AS total FROM users WHERE company_id = ?");
+$usersStmt->bind_param('i', $company_id);
+$usersStmt->execute();
+$totalUsers = (int)$usersStmt->get_result()->fetch_assoc()['total'];
+$usersStmt->close();
 
 $stats = [
-    'total_products'  => runCount($conn, $base, $types, $params),
-    'active_products' => runCount($conn, "$base AND status = 'active' AND is_removed = 0", $types, $params),
-    'near_expiry'     => runCount($conn, "$base AND status = 'near_expiry' AND is_removed = 0", $types, $params),
-    'expired'         => runCount($conn, "$base AND status = 'expired' AND is_removed = 0", $types, $params),
-    'removed'         => runCount($conn, "$base AND (status = 'removed' OR is_removed = 1)", $types, $params),
-    'total_users'     => runCount($conn, "SELECT COUNT(*) AS total FROM users WHERE company_id = ?", 'i', [$company_id]),
+    'total_products'  => (int)$agg['total_products'],
+    'active_products' => (int)$agg['active_products'],
+    'near_expiry'     => (int)$agg['near_expiry'],
+    'expired'         => (int)$agg['expired'],
+    'removed'         => (int)$agg['removed'],
+    'total_users'     => $totalUsers,
 ];
 
 jsonResponse(true, 'Dashboard stats fetched successfully', $stats);

@@ -4,7 +4,15 @@ include 'layout_top.php';
 $myRole      = $_SESSION['role']      ?? 'viewer';
 $myCompanyId = (int)($_SESSION['company_id'] ?? 0);
 $myBranchId  = (int)($_SESSION['branch_id']  ?? 0);
+$myUserId    = (int)($_SESSION['user_id']     ?? 0);
 $isAdmin     = in_array($myRole, ['super_admin','company_admin'], true);
+
+// Employees and viewers need explicit view_reports permission
+if (!in_array($myRole, ['super_admin', 'company_admin', 'branch_manager'], true)
+    && !userHasPermission($conn, $myUserId, 'view_reports')) {
+    header('Location: products.php');
+    exit();
+}
 
 // ── Filter parameters ──────────────────────────────────────────────────────
 $period   = $_GET['period']   ?? '30d';   // 7d, 30d, 90d, 180d, 365d, all
