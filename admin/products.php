@@ -117,6 +117,7 @@ $dataStmt = $conn->prepare(
             p.quantity,
             p.unit_price,
             p.status,
+            p.notes,
             u.full_name AS entered_by_name,
             b.branch_name
      FROM products p
@@ -246,6 +247,7 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
           <th>Unit Price</th>
           <th>Stock Value</th>
           <th>Status</th>
+          <th>Notes</th>
           <th>Branch</th>
           <th>Entered By</th>
           <th>Action</th>
@@ -255,7 +257,7 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
       <tbody>
       <?php if (empty($products)): ?>
         <tr>
-          <td colspan="10">
+          <td colspan="11">
             <div class="empty-state">
               <i class="bi bi-box-seam"></i>
               <p>No products found.</p>
@@ -302,10 +304,24 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
           </td>
 
           <td>
-            <span class="badge-eg <?= $statusBadge[$p['status']] ?? 'badge-removed' ?>">
-              <?= $statusLabel[$p['status']] ?? htmlspecialchars($p['status'], ENT_QUOTES, 'UTF-8') ?>
-            </span>
-          </td>
+  <span class="badge-eg <?= $statusBadge[$p['status']] ?? 'badge-removed' ?>">
+    <?= $statusLabel[$p['status']] ?? htmlspecialchars($p['status'], ENT_QUOTES, 'UTF-8') ?>
+  </span>
+</td>
+
+<td style="font-size:.78rem;color:var(--text-muted);max-width:220px">
+  <?php if (!empty($p['notes'])): ?>
+    <span title="<?= htmlspecialchars($p['notes'], ENT_QUOTES, 'UTF-8') ?>">
+      <?= htmlspecialchars(mb_strimwidth($p['notes'], 0, 55, '...'), ENT_QUOTES, 'UTF-8') ?>
+    </span>
+  <?php else: ?>
+    <span style="color:var(--text-muted)">—</span>
+  <?php endif; ?>
+</td>
+
+<td style="font-size:.78rem;color:var(--text-muted)">
+  <?= htmlspecialchars($p['branch_name'] ?? '—', ENT_QUOTES, 'UTF-8') ?>
+</td>
 
           <td style="font-size:.78rem;color:var(--text-muted)">
             <?= htmlspecialchars($p['branch_name'] ?? '—', ENT_QUOTES, 'UTF-8') ?>
