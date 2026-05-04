@@ -78,7 +78,9 @@ $aggStmt = $conn->prepare(
      LEFT JOIN users ru ON p.removed_by = ru.id
      $whereSql"
 );
-$aggStmt->bind_param($types, ...$params);
+if ($types !== '') {
+    $aggStmt->bind_param($types, ...$params);
+}
 $aggStmt->execute();
 $agg            = $aggStmt->get_result()->fetch_assoc();
 $aggStmt->close();
@@ -101,7 +103,9 @@ $dataStmt   = $conn->prepare(
      $whereSql
      ORDER BY p.removed_on DESC LIMIT ? OFFSET ?"
 );
-$dataStmt->bind_param($pageTypes, ...$pageParams);
+if ($pageTypes !== '') {
+    $dataStmt->bind_param($pageTypes, ...$pageParams);
+}
 $dataStmt->execute();
 $res   = $dataStmt->get_result();
 $items = $res->fetch_all(MYSQLI_ASSOC);

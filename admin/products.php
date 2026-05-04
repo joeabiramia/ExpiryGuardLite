@@ -134,7 +134,12 @@ if ($entryDateTo !== '') {
 
 // Total count for pagination
 $countStmt = $conn->prepare("SELECT COUNT(*) AS total FROM products p $whereSql");
-$countStmt->bind_param($types, ...$params);
+if (!$countStmt) {
+    die('Database error: ' . htmlspecialchars($conn->error, ENT_QUOTES, 'UTF-8'));
+}
+if ($types !== '') {
+    $countStmt->bind_param($types, ...$params);
+}
 $countStmt->execute();
 $totalRows  = (int)$countStmt->get_result()->fetch_assoc()['total'];
 $countStmt->close();
@@ -167,7 +172,9 @@ $dataStmt = $conn->prepare(
      LIMIT ? OFFSET ?"
 );
 
-$dataStmt->bind_param($pageTypes, ...$pageParams);
+if ($pageTypes !== '') {
+    $dataStmt->bind_param($pageTypes, ...$pageParams);
+}
 $dataStmt->execute();
 
 $res      = $dataStmt->get_result();

@@ -100,7 +100,9 @@ if (!$countStmt) {
     die('Database error: ' . htmlspecialchars($conn->error, ENT_QUOTES, 'UTF-8'));
 }
 
-$countStmt->bind_param($types, ...$params);
+if ($types !== '') {
+    $countStmt->bind_param($types, ...$params);
+}
 $countStmt->execute();
 
 $countResult = $countStmt->get_result();
@@ -142,7 +144,9 @@ if (!$dataStmt) {
     die('Database error: ' . htmlspecialchars($conn->error, ENT_QUOTES, 'UTF-8'));
 }
 
-$dataStmt->bind_param($pageTypes, ...$pageParams);
+if ($pageTypes !== '') {
+    $dataStmt->bind_param($pageTypes, ...$pageParams);
+}
 $dataStmt->execute();
 
 $res  = $dataStmt->get_result();
