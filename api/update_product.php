@@ -1,24 +1,4 @@
 <?php
-ini_set('display_errors', '0');
-error_reporting(0);
-
-set_exception_handler(function (Throwable $e) {
-    http_response_code(500);
-    header('Content-Type: application/json; charset=utf-8');
-
-    $message = $e->getMessage();
-
-    if (str_contains($message, 'Duplicate entry')) {
-        $message = 'A product with the same branch, barcode, and expiry date already exists.';
-    }
-
-    echo json_encode([
-        'success' => false,
-        'message' => 'Server error: ' . $message
-    ]);
-    exit;
-});
-
 require_once __DIR__ . '/../config/helpers.php';
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/auth.php';

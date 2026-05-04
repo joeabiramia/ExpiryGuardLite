@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/error_logging.php';
 
 function jsonResponse($success, $message, $data = null, int $code = 200): void
 {
@@ -73,6 +74,7 @@ function userHasPermission(mysqli $conn, int $userId, string $permissionKey): bo
     $stmt = $conn->prepare($sql);
 
     if (!$stmt) {
+        appLog('userHasPermission: prepare failed', 'ERROR', ['error' => $conn->error, 'permission' => $permissionKey]);
         return false;
     }
 
@@ -246,8 +248,11 @@ function logActivity(
     $stmt->bind_param('iiissis', $companyId, $branchIdVal, $userIdVal, $actionType, $targetTable, $targetIdVal, $description);
 
     if (!$stmt->execute()) {
-        // Log failure silently — don't break the main operation
-        error_log('[logActivity] Failed: ' . $stmt->error);
+        appLog('logActivity: insert failed', 'WARNING', [
+            'action' => $actionType,
+            'table'  => $targetTable,
+            'error'  => $stmt->error,
+        ]);
     }
 
     $stmt->close();

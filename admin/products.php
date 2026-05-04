@@ -26,12 +26,15 @@ $canEditDeleteProduct = $isManagerRole || userHasPermission($conn, $myUserId, 'm
 $canRemoveExpiredOnly = $myRole === 'employee' || userHasPermission($conn, $myUserId, 'remove_expired_items');
 $canRemoveProduct     = $canEditDeleteProduct || $canRemoveExpiredOnly;
 
-$search       = trim($_GET['q']         ?? '');
-$statusFilter = trim($_GET['status']    ?? '');
-$catFilter    = trim($_GET['category']  ?? '');
-$dateFrom     = trim($_GET['date_from'] ?? '');
-$dateTo       = trim($_GET['date_to']   ?? '');
-$page         = max(1, (int)($_GET['page'] ?? 1));
+$search          = trim($_GET['q']           ?? '');
+$statusFilter    = trim($_GET['status']      ?? '');
+$catFilter       = trim($_GET['category']    ?? '');
+$dateFrom        = trim($_GET['date_from']   ?? '');
+$dateTo          = trim($_GET['date_to']     ?? '');
+$employeeFilter  = (int)($_GET['employee']   ?? 0);
+$entryDateFrom   = trim($_GET['entry_from']  ?? '');
+$entryDateTo     = trim($_GET['entry_to']    ?? '');
+$page            = max(1, (int)($_GET['page'] ?? 1));
 $perPage      = 25;
 $offset       = ($page - 1) * $perPage;
 
@@ -41,6 +44,13 @@ if (!isset($_SESSION['category_rules_cache'])) {
     $_SESSION['category_rules_cache'] = $catRes ? $catRes->fetch_all(MYSQLI_ASSOC) : [];
 }
 $categories = $_SESSION['category_rules_cache'];
+
+// Employees for filter dropdown
+$empStmt = $conn->prepare("SELECT id, full_name FROM users WHERE company_id = ? AND is_active = 1 ORDER BY full_name ASC");
+$empStmt->bind_param('i', $myCompanyId);
+$empStmt->execute();
+$employees = $empStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+$empStmt->close();
 
 // Build parameterized WHERE clause
 $whereSql = "WHERE p.company_id = ?
@@ -94,6 +104,24 @@ if ($search !== '') {
     $types    .= 'sss';
 }
 
+if ($employeeFilter > 0) {
+    $whereSql .= " AND p.entered_by = ?";
+    $params[]  = $employeeFilter;
+    $types    .= 'i';
+}
+
+if ($entryDateFrom !== '') {
+    $whereSql .= " AND DATE(p.entered_on) >= ?";
+    $params[]  = $entryDateFrom;
+    $types    .= 's';
+}
+
+if ($entryDateTo !== '') {
+    $whereSql .= " AND DATE(p.entered_on) <= ?";
+    $params[]  = $entryDateTo;
+    $types    .= 's';
+}
+
 // Total count for pagination
 $countStmt = $conn->prepare("SELECT COUNT(*) AS total FROM products p $whereSql");
 $countStmt->bind_param($types, ...$params);
@@ -108,7 +136,7 @@ $pageParams = array_merge($params, [$perPage, $offset]);
 $pageTypes  = $types . 'ii';
 
 $dataStmt = $conn->prepare(
-    "SELECT 
+    "SELECT
             p.id,
             p.product_name,
             p.barcode,
@@ -118,6 +146,7 @@ $dataStmt = $conn->prepare(
             p.unit_price,
             p.status,
             p.notes,
+            p.entered_on,
             u.full_name AS entered_by_name,
             b.branch_name
      FROM products p
@@ -149,7 +178,7 @@ $statusLabel = [
     'expired'     => 'Expired',
 ];
 
-$hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
+$hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo || $employeeFilter || $entryDateFrom || $entryDateTo;
 ?>
 
 <div class="page-header">
@@ -211,6 +240,28 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
         <input type="date" name="date_to" class="branch-select" value="<?= htmlspecialchars($dateTo, ENT_QUOTES, 'UTF-8') ?>">
       </div>
 
+      <div>
+        <label class="eg-label">Entered By</label>
+        <select name="employee" class="branch-select">
+          <option value="">All Employees</option>
+          <?php foreach ($employees as $emp): ?>
+            <option value="<?= (int)$emp['id'] ?>" <?= $employeeFilter === (int)$emp['id'] ? 'selected' : '' ?>>
+              <?= htmlspecialchars($emp['full_name'], ENT_QUOTES, 'UTF-8') ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+
+      <div>
+        <label class="eg-label">Entry Date From</label>
+        <input type="date" name="entry_from" class="branch-select" value="<?= htmlspecialchars($entryDateFrom, ENT_QUOTES, 'UTF-8') ?>">
+      </div>
+
+      <div>
+        <label class="eg-label">Entry Date To</label>
+        <input type="date" name="entry_to" class="branch-select" value="<?= htmlspecialchars($entryDateTo, ENT_QUOTES, 'UTF-8') ?>">
+      </div>
+
       <button type="submit" class="btn-eg btn-primary-eg btn-sm-eg">
         <i class="bi bi-funnel"></i> Filter
       </button>
@@ -250,6 +301,7 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
           <th>Notes</th>
           <th>Branch</th>
           <th>Entered By</th>
+          <th>Entered On</th>
           <th>Action</th>
         </tr>
       </thead>
@@ -257,7 +309,7 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
       <tbody>
       <?php if (empty($products)): ?>
         <tr>
-          <td colspan="11">
+          <td colspan="12">
             <div class="empty-state">
               <i class="bi bi-box-seam"></i>
               <p>No products found.</p>
@@ -324,11 +376,11 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
 </td>
 
           <td style="font-size:.78rem;color:var(--text-muted)">
-            <?= htmlspecialchars($p['branch_name'] ?? '—', ENT_QUOTES, 'UTF-8') ?>
+            <?= htmlspecialchars($p['entered_by_name'] ?? '—', ENT_QUOTES, 'UTF-8') ?>
           </td>
 
           <td style="font-size:.78rem;color:var(--text-muted)">
-            <?= htmlspecialchars($p['entered_by_name'] ?? '—', ENT_QUOTES, 'UTF-8') ?>
+            <?= !empty($p['entered_on']) ? date('M j, Y', strtotime($p['entered_on'])) : '<span style="color:var(--text-muted)">—</span>' ?>
           </td>
 
           <td>
