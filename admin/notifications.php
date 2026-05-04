@@ -344,7 +344,7 @@ $hasFilters = $search || $statusFilter || $catFilter || $dateFrom || $dateTo;
             <?php if ($canRemove): ?>
               <button
                 class="btn-eg btn-danger-eg btn-xs-eg"
-                onclick="removeProduct(<?= (int)$item['id'] ?>, '<?= htmlspecialchars($item['product_name'], ENT_QUOTES, 'UTF-8') ?>')"
+                onclick="removeProduct(<?= (int)$item['id'] ?>, <?= json_encode($item['product_name']) ?>)"
               >
                 <i class="bi bi-trash3"></i> Remove
               </button>
