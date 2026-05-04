@@ -37,11 +37,16 @@ $categories = $_SESSION['category_rules_cache'];
 
 // Build parameterized WHERE clause
 $whereSql = "WHERE p.status IN ('near_expiry','expired')
-               AND p.is_removed = 0
-               AND p.company_id = ?";
+               AND p.is_removed = 0";
 
-$params = [$myCompanyId];
-$types  = 'i';
+$params = [];
+$types  = '';
+
+if ($myRole !== 'super_admin' && $myCompanyId > 0) {
+    $whereSql .= " AND p.company_id = ?";
+    $params[]  = $myCompanyId;
+    $types    .= 'i';
+}
 
 if (!in_array($myRole, ['super_admin', 'company_admin'], true) && $myBranchId > 0) {
     $whereSql .= " AND p.branch_id = ?";

@@ -46,18 +46,28 @@ if (!isset($_SESSION['category_rules_cache'])) {
 $categories = $_SESSION['category_rules_cache'];
 
 // Employees for filter dropdown
-$empStmt = $conn->prepare("SELECT id, full_name FROM users WHERE company_id = ? AND is_active = 1 ORDER BY full_name ASC");
-$empStmt->bind_param('i', $myCompanyId);
-$empStmt->execute();
+if ($myRole === 'super_admin') {
+    $empStmt = $conn->prepare("SELECT id, full_name FROM users WHERE is_active = 1 ORDER BY full_name ASC");
+    $empStmt->execute();
+} else {
+    $empStmt = $conn->prepare("SELECT id, full_name FROM users WHERE company_id = ? AND is_active = 1 ORDER BY full_name ASC");
+    $empStmt->bind_param('i', $myCompanyId);
+    $empStmt->execute();
+}
 $employees = $empStmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $empStmt->close();
 
 // Build parameterized WHERE clause
-$whereSql = "WHERE p.company_id = ?
-               AND p.is_removed = 0
+$whereSql = "WHERE p.is_removed = 0
                AND p.status != 'removed'";
-$params = [$myCompanyId];
-$types  = 'i';
+$params = [];
+$types  = '';
+
+if ($myRole !== 'super_admin' && $myCompanyId > 0) {
+    $whereSql .= " AND p.company_id = ?";
+    $params[]  = $myCompanyId;
+    $types    .= 'i';
+}
 
 if (!in_array($myRole, ['super_admin','company_admin'], true) && $myBranchId > 0) {
     $whereSql .= " AND p.branch_id = ?";
